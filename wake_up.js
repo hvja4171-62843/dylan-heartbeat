@@ -2,8 +2,15 @@ require("dotenv").config({ quiet: true });
 const fs = require("fs");
 const path = require("path");
 const { buildNtfyPayload } = require("./ntfy_priority");
-const { ensureDataDir, runtimeDirectory, runtimeFile } = require("./runtime_paths");
+const {
+  ensureDataDir,
+  runtimeDirectory,
+  runtimeFile,
+  writeJsonAtomicSync
+} = require("./runtime_paths");
+const { isSuccessfulPushEventContent } = require("./special_events");
 const { parseChatCompletionResponse } = require("./upstream_response");
+const { countPushesSince, isHourInWindow, reconcileWakeState } = require("./wake_policy");
 const {
   formatDateTimeInTimeZone,
   getDatePartsInTimeZone,
@@ -15,6 +22,7 @@ const {
 // 批注 2026-08-10：与 Gateway 共用同一 DATA_DIR；未配置时仍落回项目目录，保护旧 VPS/本机部署。
 const DATA_DIR = ensureDataDir();
 const TIMELINE_PATH = runtimeFile("enhanced_messages.json");
+const WAKE_STATE_PATH = runtimeFile("wake_state.json");
 const PORT = Number(process.env.PORT) || 3000;
 const GATEWAY_BASE_URL = (process.env.GATEWAY_BASE_URL || `http://localhost:${PORT}`).replace(/\/+$/, "");
 const GATEWAY_URL = `${GATEWAY_BASE_URL}/internal/wake-event`;
@@ -157,23 +165,26 @@ async function sendPushNotification({ title, body }) {
 
 function isDayTime(date = new Date()) {
   const hour = getHourInTimeZone(date, TIME_ZONE);
-  const start = readNumberEnv("WAKE_DAY_START_HOUR", 10, { min: 0, max: 23 });
-  const end = readNumberEnv("WAKE_DAY_END_HOUR", 24, { min: 1, max: 24 });
-  if (start === end) return true;
-  if (start < end) return hour >= start && hour < end;
-  return hour >= start || hour < end;
+  const start = readNumberEnv("WAKE_DAY_START_HOUR", 8, { min: 0, max: 23 });
+  const end = readNumberEnv("WAKE_DAY_END_HOUR", 2, { min: 0, max: 24 });
+  return isHourInWindow(hour, start, end);
+}
+
+function isWakeAllowedTime(date = new Date()) {
+  if (!readBooleanEnv("WAKE_ACTIVE_WINDOW_ONLY", true)) return true;
+  return isDayTime(date);
 }
 
 function getWakeAfterMinutes(date = new Date()) {
   return isDayTime(date)
-    ? readNumberEnv("DAY_WAKE_AFTER_MINUTES", 60, { min: 1 })
-    : readNumberEnv("NIGHT_WAKE_AFTER_MINUTES", 120, { min: 1 });
+    ? readNumberEnv("DAY_WAKE_AFTER_MINUTES", 90, { min: 1 })
+    : readNumberEnv("NIGHT_WAKE_AFTER_MINUTES", 90, { min: 1 });
 }
 
 function getCheckIntervalMinutes(date = new Date()) {
   return isDayTime(date)
     ? readNumberEnv("DAY_CHECK_INTERVAL_MINUTES", 10, { min: 1 })
-    : readNumberEnv("NIGHT_CHECK_INTERVAL_MINUTES", 120, { min: 1 });
+    : readNumberEnv("NIGHT_CHECK_INTERVAL_MINUTES", 60, { min: 1 });
 }
 
 function normalizeContentToText(content) {
@@ -314,6 +325,21 @@ function loadTimelineMessages() {
   }
 }
 
+function loadWakeState() {
+  if (!fs.existsSync(WAKE_STATE_PATH)) return {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(WAKE_STATE_PATH, "utf-8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (err) {
+    console.error("读取 wake_state.json 失败，将从时间线恢复:", err.message);
+    return {};
+  }
+}
+
+function saveWakeState(state) {
+  writeJsonAtomicSync(WAKE_STATE_PATH, state);
+}
+
 function getNow() {
   return new Date();
 }
@@ -352,6 +378,22 @@ function getLastUserTime(messages) {
     }
   }
   return null;
+}
+
+function getLastUserMarker(messages, lastUserTime) {
+  const message = [...messages].reverse().find(msg => {
+    return msg.role === "user" && parseTimelineTimestamp(normalizeContentToText(msg.content));
+  });
+  const content = message ? normalizeContentToText(message.content).trim() : "";
+  return `${lastUserTime.toISOString()}::${content}`;
+}
+
+function getUnansweredPushCount(messages, lastUserTime) {
+  return countPushesSince(messages, lastUserTime, {
+    getContentText: normalizeContentToText,
+    isSuccessfulPushEventContent,
+    parseTimestamp: parseTimelineTimestamp
+  });
 }
 
 function stripPosition(messages) {
@@ -415,9 +457,25 @@ async function runWakeUp() {
 
   const now = new Date();
   const diffMinutes = Math.floor((now - lastUserTime) / 1000 / 60);
+  const lastUserMarker = getLastUserMarker(messages, lastUserTime);
+  const timelinePushCount = getUnansweredPushCount(messages, lastUserTime);
+  const wakeState = reconcileWakeState(loadWakeState(), lastUserMarker, timelinePushCount);
+  saveWakeState(wakeState);
+
+  if (!isWakeAllowedTime(now)) {
+    console.log("\n当前处于静默时段，不执行唤醒\n");
+    return;
+  }
 
   if (!shouldWake(lastUserTime)) {
     console.log("\n暂不需要唤醒\n");
+    return;
+  }
+
+  const maxUnansweredPushes = readNumberEnv("MAX_UNANSWERED_PUSHES", 2, { min: 1 });
+  const unansweredPushes = wakeState.unanswered_pushes;
+  if (unansweredPushes >= maxUnansweredPushes) {
+    console.log(`\n用户尚未回复，已成功推送 ${unansweredPushes} 次；暂停推送直到收到新消息\n`);
     return;
   }
 
@@ -586,6 +644,10 @@ ${historyText}`
         console.log(`\n${pushResult.providerLabel} 推送失败，本次不发送推送\n`);
         eventContent = `（${getLocalTimeString()} 自动唤醒：本次未发送推送｜原因：${pushResult.providerLabel} 推送失败：${pushResult.reason}）`;
       } else {
+        saveWakeState({
+          last_user_marker: lastUserMarker,
+          unanswered_pushes: unansweredPushes + 1
+        });
         eventContent = `（${getLocalTimeString()} 刚刚给用户发了${pushResult.providerLabel}推送：${safeTitle}｜${safeBody}）`;
       }
     }
@@ -639,6 +701,8 @@ console.log(JSON.stringify({
   target_key_configured: Boolean(process.env.TARGET_API_KEY),
   model_configured: Boolean(process.env.MODEL_NAME),
   push_provider_configured: Boolean(process.env.BARK_KEY || process.env.NTFY_TOPIC),
+  active_window_only: readBooleanEnv("WAKE_ACTIVE_WINDOW_ONLY", true),
+  max_unanswered_pushes: readNumberEnv("MAX_UNANSWERED_PUSHES", 2, { min: 1 }),
   data_dir_ready: fs.existsSync(DATA_DIR)
 }));
 console.log("==================================\n");

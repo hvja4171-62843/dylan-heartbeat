@@ -446,6 +446,8 @@ const PREFERRED_ENV_ORDER = [
   "NIGHT_CHECK_INTERVAL_MINUTES",
   "WAKE_DAY_START_HOUR",
   "WAKE_DAY_END_HOUR",
+  "WAKE_ACTIVE_WINDOW_ONLY",
+  "MAX_UNANSWERED_PUSHES",
   "WEATHER_ENABLED",
   "WEATHER_LOCATION_NAME",
   "WEATHER_LAT",
@@ -865,12 +867,14 @@ app.get("/admin", { preHandler: basicAuth }, async (req, reply) => {
   const currentIcon = readEnvValue("CUSTOM_ICON_URL");
   const gatewayKeyStatus = readEnvValue("GATEWAY_API_KEY") ? "已配置" : "未配置";
   const wakeConfig = {
-    dayWakeAfter: readEnvValueOrDefault("DAY_WAKE_AFTER_MINUTES", "60"),
-    nightWakeAfter: readEnvValueOrDefault("NIGHT_WAKE_AFTER_MINUTES", "120"),
+    dayWakeAfter: readEnvValueOrDefault("DAY_WAKE_AFTER_MINUTES", "90"),
+    nightWakeAfter: readEnvValueOrDefault("NIGHT_WAKE_AFTER_MINUTES", "90"),
     dayCheckInterval: readEnvValueOrDefault("DAY_CHECK_INTERVAL_MINUTES", "10"),
-    nightCheckInterval: readEnvValueOrDefault("NIGHT_CHECK_INTERVAL_MINUTES", "120"),
-    dayStartHour: readEnvValueOrDefault("WAKE_DAY_START_HOUR", "10"),
-    dayEndHour: readEnvValueOrDefault("WAKE_DAY_END_HOUR", "24")
+    nightCheckInterval: readEnvValueOrDefault("NIGHT_CHECK_INTERVAL_MINUTES", "60"),
+    dayStartHour: readEnvValueOrDefault("WAKE_DAY_START_HOUR", "8"),
+    dayEndHour: readEnvValueOrDefault("WAKE_DAY_END_HOUR", "2"),
+    activeWindowOnly: readEnvValueOrDefault("WAKE_ACTIVE_WINDOW_ONLY", "true"),
+    maxUnansweredPushes: readEnvValueOrDefault("MAX_UNANSWERED_PUSHES", "2")
   };
   const weatherConfig = {
     enabled: readEnvValueOrDefault("WEATHER_ENABLED", "false"),
@@ -1395,30 +1399,42 @@ const html = `<!DOCTYPE html>
         <div class="section-title">Wake Settings</div>
         <div class="grid-2">
           <div>
-            <label>白天多久未回复后唤醒（分钟）</label>
+            <label>允许时段内多久未回复后唤醒（分钟）</label>
             <input type="number" min="1" name="day_wake_after" id="f_day_wake_after" value="${escapeHtml(wakeConfig.dayWakeAfter)}">
           </div>
           <div>
-            <label>夜间多久未回复后唤醒（分钟）</label>
+            <label>窗口限制关闭时的备用阈值（分钟）</label>
             <input type="number" min="1" name="night_wake_after" id="f_night_wake_after" value="${escapeHtml(wakeConfig.nightWakeAfter)}">
           </div>
           <div>
-            <label>白天检查间隔（分钟）</label>
+            <label>允许时段检查间隔（分钟）</label>
             <input type="number" min="1" name="day_check_interval" id="f_day_check_interval" value="${escapeHtml(wakeConfig.dayCheckInterval)}">
           </div>
           <div>
-            <label>夜间检查间隔（分钟）</label>
+            <label>静默时段检查间隔（分钟）</label>
             <input type="number" min="1" name="night_check_interval" id="f_night_check_interval" value="${escapeHtml(wakeConfig.nightCheckInterval)}">
           </div>
           <div>
-            <label>白天开始小时</label>
+            <label>允许唤醒开始小时</label>
             <input type="number" min="0" max="23" name="wake_day_start_hour" id="f_wake_day_start_hour" value="${escapeHtml(wakeConfig.dayStartHour)}">
           </div>
           <div>
-            <label>白天结束小时</label>
-            <input type="number" min="1" max="24" name="wake_day_end_hour" id="f_wake_day_end_hour" value="${escapeHtml(wakeConfig.dayEndHour)}">
+            <label>允许唤醒结束小时</label>
+            <input type="number" min="0" max="24" name="wake_day_end_hour" id="f_wake_day_end_hour" value="${escapeHtml(wakeConfig.dayEndHour)}">
+          </div>
+          <div>
+            <label>仅允许上述时段唤醒</label>
+            <select name="wake_active_window_only" id="f_wake_active_window_only">
+              <option value="true" ${wakeConfig.activeWindowOnly === "true" ? "selected" : ""}>开启</option>
+              <option value="false" ${wakeConfig.activeWindowOnly === "true" ? "" : "selected"}>关闭</option>
+            </select>
+          </div>
+          <div>
+            <label>未回复最多成功推送次数</label>
+            <input type="number" min="1" name="max_unanswered_pushes" id="f_max_unanswered_pushes" value="${escapeHtml(wakeConfig.maxUnansweredPushes)}">
           </div>
         </div>
+        <div class="hint">开始 8、结束 2 表示每天 08:00 至次日 02:00；02:00 至 08:00 完全静默。只有实际发送成功的推送会计数，用户新消息会自动重置计数。</div>
 
         <div class="section-title">Weather</div>
         <label>天气注入</label>
@@ -1503,6 +1519,8 @@ const html = `<!DOCTYPE html>
         night_check_interval: document.getElementById("f_night_check_interval").value.trim(),
         wake_day_start_hour: document.getElementById("f_wake_day_start_hour").value.trim(),
         wake_day_end_hour: document.getElementById("f_wake_day_end_hour").value.trim(),
+        wake_active_window_only: document.getElementById("f_wake_active_window_only").value,
+        max_unanswered_pushes: document.getElementById("f_max_unanswered_pushes").value.trim(),
         weather_enabled: document.getElementById("f_weather_enabled").value,
         weather_location_name: document.getElementById("f_weather_location_name").value.trim(),
         weather_lat: document.getElementById("f_weather_lat").value.trim(),
@@ -1619,6 +1637,8 @@ app.post("/admin/save", { preHandler: basicAuth }, async (req, reply) => {
       night_check_interval,
       wake_day_start_hour,
       wake_day_end_hour,
+      wake_active_window_only,
+      max_unanswered_pushes,
       weather_enabled,
       weather_location_name,
       weather_lat,
@@ -1643,12 +1663,14 @@ app.post("/admin/save", { preHandler: basicAuth }, async (req, reply) => {
       MODEL_NAME: model_name,
       BARK_KEY: finalBarkKey,
       CUSTOM_ICON_URL: custom_icon || "",
-      DAY_WAKE_AFTER_MINUTES: normalizePositiveInteger(day_wake_after, "DAY_WAKE_AFTER_MINUTES", "60"),
-      NIGHT_WAKE_AFTER_MINUTES: normalizePositiveInteger(night_wake_after, "NIGHT_WAKE_AFTER_MINUTES", "120"),
+      DAY_WAKE_AFTER_MINUTES: normalizePositiveInteger(day_wake_after, "DAY_WAKE_AFTER_MINUTES", "90"),
+      NIGHT_WAKE_AFTER_MINUTES: normalizePositiveInteger(night_wake_after, "NIGHT_WAKE_AFTER_MINUTES", "90"),
       DAY_CHECK_INTERVAL_MINUTES: normalizePositiveInteger(day_check_interval, "DAY_CHECK_INTERVAL_MINUTES", "10"),
-      NIGHT_CHECK_INTERVAL_MINUTES: normalizePositiveInteger(night_check_interval, "NIGHT_CHECK_INTERVAL_MINUTES", "120"),
-      WAKE_DAY_START_HOUR: normalizeHour(wake_day_start_hour, "WAKE_DAY_START_HOUR", "10", 0, 23),
-      WAKE_DAY_END_HOUR: normalizeHour(wake_day_end_hour, "WAKE_DAY_END_HOUR", "24", 1, 24),
+      NIGHT_CHECK_INTERVAL_MINUTES: normalizePositiveInteger(night_check_interval, "NIGHT_CHECK_INTERVAL_MINUTES", "60"),
+      WAKE_DAY_START_HOUR: normalizeHour(wake_day_start_hour, "WAKE_DAY_START_HOUR", "8", 0, 23),
+      WAKE_DAY_END_HOUR: normalizeHour(wake_day_end_hour, "WAKE_DAY_END_HOUR", "2", 0, 24),
+      WAKE_ACTIVE_WINDOW_ONLY: normalizeBooleanString(wake_active_window_only, "WAKE_ACTIVE_WINDOW_ONLY", "true"),
+      MAX_UNANSWERED_PUSHES: normalizePositiveInteger(max_unanswered_pushes, "MAX_UNANSWERED_PUSHES", "2"),
       WEATHER_ENABLED: normalizeBooleanString(weather_enabled, "WEATHER_ENABLED", "false"),
       WEATHER_LOCATION_NAME: weather_location_name || "",
       WEATHER_LAT: weather_lat || "",

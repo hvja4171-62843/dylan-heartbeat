@@ -73,6 +73,7 @@ Bark / ntfy 推送 → 你的手机
 | `wake_up.js` | 自动唤醒 Runtime。按间隔唤醒 AI，生成推送或静默，发送到手机，写入时间线。 |
 | `enhanced_messages.json` | **AI 世界时间线**。SP + 真实对话 + 推送事件。不是日志，是 AI 的当前世界。 |
 | `message_timestamps.json` | **时间戳记忆库**。通过内容指纹记录每条消息的原始时间，找回历史消息时间。 |
+| `wake_state.json` | **唤醒状态**。持久保存最后用户消息和连续成功推送次数，用户回复后自动重置。 |
 | `diary/` | **自动日记目录**。当 AI 主动输出 `[DIARY]...[/DIARY]` 时，会按日期追加保存。 |
 | `.env` | 环境变量。API Key、推送渠道、模型名称等（不提交到 Git）。 |
 | `.env.example` | 环境变量模板，供新用户参考配置。 |
@@ -249,12 +250,14 @@ DIARY_DIR=diary
 DATA_DIR=
 REQUEST_BODY_LIMIT_MB=50
 MULTIMODAL_MODE=passthrough
-DAY_WAKE_AFTER_MINUTES=60
-NIGHT_WAKE_AFTER_MINUTES=120
+DAY_WAKE_AFTER_MINUTES=90
+NIGHT_WAKE_AFTER_MINUTES=90
 DAY_CHECK_INTERVAL_MINUTES=10
-NIGHT_CHECK_INTERVAL_MINUTES=120
-WAKE_DAY_START_HOUR=10
-WAKE_DAY_END_HOUR=24
+NIGHT_CHECK_INTERVAL_MINUTES=60
+WAKE_DAY_START_HOUR=8
+WAKE_DAY_END_HOUR=2
+WAKE_ACTIVE_WINDOW_ONLY=true
+MAX_UNANSWERED_PUSHES=2
 WEATHER_ENABLED=false
 WEATHER_LOCATION_NAME=Beijing
 WEATHER_LAT=
@@ -356,29 +359,33 @@ Railway 使用环境变量（**Variables**）注入运行时配置，且没有�
 
 ## ⏱️ 自动唤醒策略
 
-- **白天默认（10:00–24:00）**：距离最后一条用户消息 **60 分钟**自动唤醒
-- **夜间默认（00:00–10:00）**：间隔放宽为 **120 分钟**
-- 检查频率默认：白天每 10 分钟，夜间每 2 小时
-- 若用户一直未回复，后续会继续唤醒
+- **允许时段（08:00–次日 02:00）**：距离最后一条用户消息 **90 分钟**后允许自动唤醒
+- **静默时段（02:00–08:00）**：完全不唤醒，也不补发夜间错过的检查
+- 允许时段每 10 分钟检查一次；静默时段每 60 分钟做一次轻量状态检查
+- 若连续成功推送 2 次仍未收到用户新消息，停止推送；用户再次发言后自动重置
 
 这些数值在本机/VPS + pm2 部署时，可以在 `/admin` 管理页的 **Wake Settings** 区域填写，保存后重启 `gateway` 和 `wake-up` 生效。Railway / Render 等云端部署请改平台的环境变量，再重新部署。
 
 对应环境变量：
 
 ```env
-DAY_WAKE_AFTER_MINUTES=60
-NIGHT_WAKE_AFTER_MINUTES=120
+DAY_WAKE_AFTER_MINUTES=90
+NIGHT_WAKE_AFTER_MINUTES=90
 DAY_CHECK_INTERVAL_MINUTES=10
-NIGHT_CHECK_INTERVAL_MINUTES=120
-WAKE_DAY_START_HOUR=10
-WAKE_DAY_END_HOUR=24
+NIGHT_CHECK_INTERVAL_MINUTES=60
+WAKE_DAY_START_HOUR=8
+WAKE_DAY_END_HOUR=2
+WAKE_ACTIVE_WINDOW_ONLY=true
+MAX_UNANSWERED_PUSHES=2
 ```
 
 说明：
 
-- `DAY_WAKE_AFTER_MINUTES` / `NIGHT_WAKE_AFTER_MINUTES`：距离最后一条用户消息多久后允许唤醒。
-- `DAY_CHECK_INTERVAL_MINUTES` / `NIGHT_CHECK_INTERVAL_MINUTES`：后台多久检查一次是否应该唤醒。
-- `WAKE_DAY_START_HOUR` / `WAKE_DAY_END_HOUR`：哪一段时间算“白天”；不在白天范围内就按夜间策略处理。
+- `DAY_WAKE_AFTER_MINUTES`：允许时段内，距离最后一条用户消息多久后允许唤醒。
+- `DAY_CHECK_INTERVAL_MINUTES` / `NIGHT_CHECK_INTERVAL_MINUTES`：允许时段和静默时段各自的检查间隔。
+- `WAKE_DAY_START_HOUR` / `WAKE_DAY_END_HOUR`：允许唤醒窗口；开始时间大于结束时间时表示跨午夜。
+- `WAKE_ACTIVE_WINDOW_ONLY=true`：窗口外完全禁止唤醒。
+- `MAX_UNANSWERED_PUSHES`：用户没有发来新消息时，最多成功推送多少次；失败或 `[NO_ACTION]` 不计数。
 
 ## 🌦️ 天气注入
 

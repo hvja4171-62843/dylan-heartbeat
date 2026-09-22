@@ -2,6 +2,8 @@
 node_modules
 enhanced_messages.json
 message_timestamps.json
+wake_state.json
+wake_state.json*
 enhanced_messages.json*
 *bak*
 .DS_Store
