@@ -10,7 +10,13 @@ const {
 } = require("./runtime_paths");
 const { isSuccessfulPushEventContent } = require("./special_events");
 const { parseChatCompletionResponse } = require("./upstream_response");
-const { countPushesSince, isHourInWindow, reconcileWakeState } = require("./wake_policy");
+const {
+  countPushesSince,
+  getWakeDeadline,
+  isHourInWindow,
+  isQuietWindowExceptionDue,
+  reconcileWakeState
+} = require("./wake_policy");
 const {
   formatDateTimeInTimeZone,
   getDatePartsInTimeZone,
@@ -179,6 +185,10 @@ function getWakeAfterMinutes(date = new Date()) {
   return isDayTime(date)
     ? readNumberEnv("DAY_WAKE_AFTER_MINUTES", 90, { min: 1 })
     : readNumberEnv("NIGHT_WAKE_AFTER_MINUTES", 90, { min: 1 });
+}
+
+function getWakeDeadlineForUser(lastUserTime) {
+  return getWakeDeadline(lastUserTime, getWakeAfterMinutes(lastUserTime));
 }
 
 function getCheckIntervalMinutes(date = new Date()) {
@@ -352,10 +362,34 @@ function getLocalTimeString() {
   return formatDateTimeInTimeZone(new Date(), TIME_ZONE);
 }
 
-function shouldWake(lastUserTime) {
-  const now = getNow();
-  const diffMinutes = Math.floor((now - new Date(lastUserTime)) / 1000 / 60);
-  return diffMinutes >= getWakeAfterMinutes(now);
+function shouldWake(lastUserTime, now = getNow()) {
+  const deadline = getWakeDeadlineForUser(lastUserTime);
+  return Boolean(deadline && now >= deadline);
+}
+
+function isQuietWindowExceptionDueNow(lastUserTime, now) {
+  return isQuietWindowExceptionDue({
+    lastUserTime,
+    now,
+    wakeAfterMinutes: getWakeAfterMinutes(lastUserTime),
+    getHour: date => getHourInTimeZone(date, TIME_ZONE),
+    start: readNumberEnv("WAKE_DAY_START_HOUR", 8, { min: 0, max: 23 }),
+    end: readNumberEnv("WAKE_DAY_END_HOUR", 2, { min: 0, max: 24 }),
+    activeWindowOnly: readBooleanEnv("WAKE_ACTIVE_WINDOW_ONLY", true)
+  });
+}
+
+function getWakeMode(lastUserTime, now, unansweredPushes) {
+  if (isWakeAllowedTime(now)) {
+    return shouldWake(lastUserTime, now) ? "normal" : null;
+  }
+
+  // 静默时段只放行一次：如果这条用户消息还没有成功推送过，90 分钟到期时允许例外推送。
+  if (unansweredPushes === 0 && isQuietWindowExceptionDueNow(lastUserTime, now)) {
+    return "quiet_exception";
+  }
+
+  return null;
 }
 
 function parseTimelineTimestamp(value) {
@@ -462,21 +496,25 @@ async function runWakeUp() {
   const wakeState = reconcileWakeState(loadWakeState(), lastUserMarker, timelinePushCount);
   saveWakeState(wakeState);
 
-  if (!isWakeAllowedTime(now)) {
-    console.log("\n当前处于静默时段，不执行唤醒\n");
-    return;
-  }
-
-  if (!shouldWake(lastUserTime)) {
-    console.log("\n暂不需要唤醒\n");
-    return;
-  }
-
   const maxUnansweredPushes = readNumberEnv("MAX_UNANSWERED_PUSHES", 2, { min: 1 });
   const unansweredPushes = wakeState.unanswered_pushes;
   if (unansweredPushes >= maxUnansweredPushes) {
     console.log(`\n用户尚未回复，已成功推送 ${unansweredPushes} 次；暂停推送直到收到新消息\n`);
     return;
+  }
+
+  const wakeMode = getWakeMode(lastUserTime, now, unansweredPushes);
+  if (!wakeMode) {
+    if (!isWakeAllowedTime(now)) {
+      console.log("\n当前处于静默时段，不执行唤醒\n");
+    } else {
+      console.log("\n暂不需要唤醒\n");
+    }
+    return;
+  }
+
+  if (wakeMode === "quiet_exception") {
+    console.log("\n当前处于静默时段，但已到达 90 分钟例外唤醒点\n");
   }
 
   const weatherContext = await fetchWeatherContext();
@@ -648,7 +686,8 @@ ${historyText}`
           last_user_marker: lastUserMarker,
           unanswered_pushes: unansweredPushes + 1
         });
-        eventContent = `（${getLocalTimeString()} 刚刚给用户发了${pushResult.providerLabel}推送：${safeTitle}｜${safeBody}）`;
+        const exceptionLabel = wakeMode === "quiet_exception" ? "｜标记：90分钟静默时段例外" : "";
+        eventContent = `（${getLocalTimeString()} 刚刚给用户发了${pushResult.providerLabel}推送：${safeTitle}｜${safeBody}${exceptionLabel}）`;
       }
     }
   }
@@ -669,9 +708,23 @@ ${historyText}`
 }
 
 // 从第一个有效坐标开始，所有路径都指向同一处。此阈值已锁定。
+function getLastTimelineUserTime() {
+  const messages = loadTimelineMessages();
+  return messages ? getLastUserTime(messages) : null;
+}
+
 function getCheckIntervalMs() {
-  // 批注 2026-06-26：公开版允许用户在管理页调整唤醒检查频率；默认值保持旧版白天10分钟、夜间2小时。
-  return getCheckIntervalMinutes(new Date()) * 60 * 1000;
+  // 批注 2026-06-26：公开版允许用户在管理页调整唤醒检查频率；默认值保持白天10分钟、夜间60分钟。
+  const now = getNow();
+  const baseIntervalMs = getCheckIntervalMinutes(now) * 60 * 1000;
+  const lastUserTime = getLastTimelineUserTime();
+  if (!lastUserTime) return baseIntervalMs;
+
+  const deadline = getWakeDeadlineForUser(lastUserTime);
+  if (!deadline || deadline <= now) return baseIntervalMs;
+
+  // 提前在 90 分钟到期点检查，避免静默时段的 60 分钟轮询把例外推送拖晚。
+  return Math.max(1000, Math.min(baseIntervalMs, deadline.getTime() - now.getTime() + 1000));
 }
 
 async function scheduleNextCheck() {

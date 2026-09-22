@@ -4,6 +4,33 @@ function isHourInWindow(hour, start, end) {
   return hour >= start || hour < end;
 }
 
+function getWakeDeadline(lastUserTime, wakeAfterMinutes) {
+  const last = lastUserTime instanceof Date ? lastUserTime : new Date(lastUserTime);
+  const minutes = Number(wakeAfterMinutes);
+  if (Number.isNaN(last.getTime()) || !Number.isFinite(minutes)) return null;
+  return new Date(last.getTime() + minutes * 60 * 1000);
+}
+
+function isQuietWindowExceptionDue({
+  lastUserTime,
+  now,
+  wakeAfterMinutes,
+  getHour,
+  start,
+  end,
+  activeWindowOnly = true
+}) {
+  if (!activeWindowOnly || typeof getHour !== "function") return false;
+
+  const current = now instanceof Date ? now : new Date(now);
+  const deadline = getWakeDeadline(lastUserTime, wakeAfterMinutes);
+  if (!deadline || Number.isNaN(current.getTime())) return false;
+
+  const currentIsActive = isHourInWindow(getHour(current), start, end);
+  const deadlineIsActive = isHourInWindow(getHour(deadline), start, end);
+  return !currentIsActive && !deadlineIsActive && current >= deadline;
+}
+
 function countPushesSince(messages, since, options) {
   if (!(since instanceof Date) || Number.isNaN(since.getTime())) return 0;
 
@@ -37,4 +64,10 @@ function reconcileWakeState(storedState, userMarker, timelinePushCount) {
   };
 }
 
-module.exports = { countPushesSince, isHourInWindow, reconcileWakeState };
+module.exports = {
+  countPushesSince,
+  getWakeDeadline,
+  isHourInWindow,
+  isQuietWindowExceptionDue,
+  reconcileWakeState
+};

@@ -1,7 +1,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { isSuccessfulPushEventContent } = require("../special_events");
-const { countPushesSince, isHourInWindow, reconcileWakeState } = require("../wake_policy");
+const {
+  countPushesSince,
+  getWakeDeadline,
+  isHourInWindow,
+  isQuietWindowExceptionDue,
+  reconcileWakeState
+} = require("../wake_policy");
 
 test("supports an active window that crosses midnight", () => {
   assert.equal(isHourInWindow(8, 8, 2), true);
@@ -9,6 +15,44 @@ test("supports an active window that crosses midnight", () => {
   assert.equal(isHourInWindow(1, 8, 2), true);
   assert.equal(isHourInWindow(2, 8, 2), false);
   assert.equal(isHourInWindow(7, 8, 2), false);
+});
+
+test("allows one quiet-window exception when the 90-minute deadline is quiet", () => {
+  const getHour = date => date.getUTCHours();
+  const lastUserTime = new Date("2026-09-22T02:00:00Z");
+  const deadline = getWakeDeadline(lastUserTime, 90);
+
+  assert.equal(deadline.toISOString(), "2026-09-22T03:30:00.000Z");
+  assert.equal(isQuietWindowExceptionDue({
+    lastUserTime,
+    now: new Date("2026-09-22T03:29:59Z"),
+    wakeAfterMinutes: 90,
+    getHour,
+    start: 8,
+    end: 2
+  }), false);
+  assert.equal(isQuietWindowExceptionDue({
+    lastUserTime,
+    now: new Date("2026-09-22T03:30:00Z"),
+    wakeAfterMinutes: 90,
+    getHour,
+    start: 8,
+    end: 2
+  }), true);
+});
+
+test("does not treat an active-window deadline as a quiet exception", () => {
+  const getHour = date => date.getUTCHours();
+  const lastUserTime = new Date("2026-09-22T07:00:00Z");
+
+  assert.equal(isQuietWindowExceptionDue({
+    lastUserTime,
+    now: new Date("2026-09-22T08:30:00Z"),
+    wakeAfterMinutes: 90,
+    getHour,
+    start: 8,
+    end: 2
+  }), false);
 });
 
 test("counts successful pushes only after the latest user message", () => {
