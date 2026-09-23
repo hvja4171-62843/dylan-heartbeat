@@ -24,11 +24,13 @@ const {
   resolveTimeZone,
   zonedWallTimeToDate
 } = require("./time_utils");
+const { buildLegacyWakeHistoryEntry, clip, formatWakeHistory } = require("./wake_history");
 
 // 批注 2026-08-10：与 Gateway 共用同一 DATA_DIR；未配置时仍落回项目目录，保护旧 VPS/本机部署。
 const DATA_DIR = ensureDataDir();
 const TIMELINE_PATH = runtimeFile("enhanced_messages.json");
 const WAKE_STATE_PATH = runtimeFile("wake_state.json");
+const WAKE_HISTORY_PATH = runtimeFile("wake_history.json");
 const PORT = Number(process.env.PORT) || 3000;
 const GATEWAY_BASE_URL = (process.env.GATEWAY_BASE_URL || `http://localhost:${PORT}`).replace(/\/+$/, "");
 const GATEWAY_URL = `${GATEWAY_BASE_URL}/internal/wake-event`;
@@ -39,6 +41,7 @@ const DIARY_DIR_NAME = process.env.DIARY_DIR || "diary";
 const DIARY_DIR_PATH = runtimeDirectory(DIARY_DIR_NAME, "diary");
 const PUSH_TIMEOUT_MS = readPositiveTimeout("PUSH_TIMEOUT_MS", 15_000);
 const WAKE_UPSTREAM_TIMEOUT_MS = readPositiveTimeout("WAKE_UPSTREAM_TIMEOUT_MS", 300_000);
+const WAKE_HISTORY_LIMIT = 100;
 
 function readPositiveTimeout(key, fallback) {
   const value = Number(process.env[key]);
@@ -350,6 +353,70 @@ function saveWakeState(state) {
   writeJsonAtomicSync(WAKE_STATE_PATH, state);
 }
 
+function loadWakeHistory() {
+  if (!fs.existsSync(WAKE_HISTORY_PATH)) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(WAKE_HISTORY_PATH, "utf-8"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    console.error("读取 wake_history.json 失败:", err.message);
+    return [];
+  }
+}
+
+function saveWakeHistory(entries) {
+  const list = Array.isArray(entries) ? entries.slice(-WAKE_HISTORY_LIMIT) : [];
+  writeJsonAtomicSync(WAKE_HISTORY_PATH, list);
+}
+
+function upsertWakeHistory(entry) {
+  if (!entry || !entry.id) return;
+  const history = loadWakeHistory();
+  const index = history.findIndex(item => item && item.id === entry.id);
+  if (index >= 0) history[index] = { ...history[index], ...entry };
+  else history.push(entry);
+  saveWakeHistory(history);
+}
+
+function migrateLegacyWakeHistory(messages) {
+  const history = loadWakeHistory();
+  const migrated = [];
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (message?.role !== "assistant") continue;
+    const entry = buildLegacyWakeHistoryEntry(normalizeContentToText(message.content), {
+      parseTime: parseTimelineTimestamp
+    });
+    if (!entry) continue;
+
+    // Legacy timeline events only have minute precision. Avoid duplicating a
+    // newly recorded entry whose attempted_at includes seconds.
+    const alreadyKnown = history.some(item => {
+      const known = new Date(item?.attempted_at || "");
+      return !Number.isNaN(known.getTime())
+        && Math.floor(known.getTime() / 60000) === Math.floor(new Date(entry.attempted_at).getTime() / 60000);
+    });
+    if (!alreadyKnown && !migrated.some(item => item.id === entry.id)) migrated.push(entry);
+  }
+
+  if (migrated.length > 0) saveWakeHistory([...history, ...migrated]);
+}
+
+function formatWakeHistoryForPrompt() {
+  return formatWakeHistory(loadWakeHistory(), {
+    limit: 12,
+    formatTime: value => {
+      const date = new Date(value);
+      return Number.isNaN(date.getTime())
+        ? "未知时间"
+        : formatDateTimeInTimeZone(date, TIME_ZONE);
+    }
+  });
+}
+
+function getWakeContextMessageLimit() {
+  return Math.floor(readNumberEnv("WAKE_CONTEXT_MESSAGES", 200, { min: 20, max: 2000 }));
+}
+
 function getNow() {
   return new Date();
 }
@@ -444,26 +511,48 @@ function stripPosition(messages) {
   return messages.map(({ position, ...rest }) => rest);
 }
 
-function buildWakePrompt(currentTime, diffMinutes, weatherContext = "") {
+function buildWakeContinuitySection(wakeHistoryContext) {
+  return `## 自动唤醒连续性
+下面是系统保存的最近自动唤醒记录，不是用户消息，也不是需要再次执行的任务。
+${wakeHistoryContext}
+
+请严格依据这些记录判断过去发生了什么：
+- “已发起模型唤醒但没有保存到完成结果”只能说明系统开始过一次唤醒，不能断言是否生成了内容或发送了推送。
+- “模型决定不推送”表示模型确实被调用过，但本次没有发送手机通知。
+- “推送已发送”才表示系统确认向手机发起了推送。
+- 不要把过去的唤醒记录编造成用户昨晚收到过的消息。`;
+}
+
+function renderWakePromptTemplate(template, currentTime, diffMinutes, weatherContext, wakeHistoryContext) {
+  const continuity = buildWakeContinuitySection(wakeHistoryContext);
+  const hasHistoryPlaceholder = /\$\{wakeHistory\}|\$\{wakeContinuity\}/.test(template);
+  const rendered = template
+    .replace(/\$\{currentTime\}/g, currentTime)
+    .replace(/\$\{diffMinutes\}/g, diffMinutes)
+    .replace(/\$\{weatherContext\}/g, weatherContext)
+    .replace(/\$\{weather\}/g, weatherContext)
+    .replace(/\$\{wakeHistory\}/g, wakeHistoryContext)
+    .replace(/\$\{wakeContinuity\}/g, continuity);
+  return hasHistoryPlaceholder ? rendered : `${rendered.trim()}\n\n${continuity}`;
+}
+
+function buildWakePrompt(currentTime, diffMinutes, weatherContext = "", wakeHistoryContext = "暂无已记录的自动唤醒。") {
   // 优先读取独立的提示词文件（推荐方式）
   const promptFile = path.join(__dirname, "wake_prompt.txt");
   if (fs.existsSync(promptFile)) {
     const template = fs.readFileSync(promptFile, "utf-8");
-    return template
-      .replace(/\$\{currentTime\}/g, currentTime)
-      .replace(/\$\{diffMinutes\}/g, diffMinutes)
-      .replace(/\$\{weatherContext\}/g, weatherContext)
-      .replace(/\$\{weather\}/g, weatherContext);
+    return renderWakePromptTemplate(template, currentTime, diffMinutes, weatherContext, wakeHistoryContext);
   }
 
   // 如果文件不存在，尝试从环境变量读取（兼容旧配置）
   if (process.env.WAKE_PROMPT_TEMPLATE) {
-    return process.env.WAKE_PROMPT_TEMPLATE
-      .replace(/\\n/g, '\n')
-      .replace(/\$\{currentTime\}/g, currentTime)
-      .replace(/\$\{diffMinutes\}/g, diffMinutes)
-      .replace(/\$\{weatherContext\}/g, weatherContext)
-      .replace(/\$\{weather\}/g, weatherContext);
+    return renderWakePromptTemplate(
+      process.env.WAKE_PROMPT_TEMPLATE.replace(/\\n/g, '\n'),
+      currentTime,
+      diffMinutes,
+      weatherContext,
+      wakeHistoryContext
+    );
   }
 
   // 默认理智版本（开源通用），可自行修改提示词
@@ -477,6 +566,8 @@ function buildWakePrompt(currentTime, diffMinutes, weatherContext = "") {
 - 当前时间：${currentTime}
 - 距离用户最后一条消息：${diffMinutes} 分钟
 ${weatherContext ? `\n${weatherContext}\n` : ""}
+
+${buildWakeContinuitySection(wakeHistoryContext)}
 
 ## 输出格式
 - 如果想联系用户，直接写你想说的话。系统会自动打包成手机推送发送。可以是一句话，也可以第一行作为标题、第二行作为正文。
@@ -492,6 +583,7 @@ async function runWakeUp() {
 
   const messages = loadTimelineMessages();
   if (!messages) return;
+  migrateLegacyWakeHistory(messages);
 
   const lastUserTime = getLastUserTime(messages);
   if (!lastUserTime) {
@@ -528,15 +620,24 @@ async function runWakeUp() {
   }
 
   const weatherContext = await fetchWeatherContext();
-  const wakePrompt = buildWakePrompt(getChinaTimeString(), diffMinutes, weatherContext);
+  const wakeHistoryContext = formatWakeHistoryForPrompt();
+  const wakePrompt = buildWakePrompt(
+    getChinaTimeString(),
+    diffMinutes,
+    weatherContext,
+    wakeHistoryContext
+  );
   const cleanMessages = stripPosition(messages);
 
-  const historyText = cleanMessages
+  const historyMessages = cleanMessages
     .filter(msg => msg.role !== "system")
     .filter(msg => {
       const c = normalizeContentToText(msg.content);
       return !c.includes("<memories>") && !c.includes("记忆库使用策略");
-    })
+    });
+  const wakeContextLimit = getWakeContextMessageLimit();
+  const historyText = historyMessages
+    .slice(-wakeContextLimit)
     .map(msg => {
       const userDisplay = process.env.USER_DISPLAY_NAME || "用户";
       const aiDisplay = process.env.AI_DISPLAY_NAME || "AI";
@@ -572,6 +673,8 @@ async function runWakeUp() {
 
 最近记录：
 
+（以下为最近 ${Math.min(historyMessages.length, wakeContextLimit)} 条记录；更早的自动唤醒结果见上方的系统记录。）
+
 ${historyText}`
     }
   ];
@@ -592,33 +695,50 @@ ${historyText}`
   wakeState.wake_attempted_at = now.toISOString();
   saveWakeState(wakeState);
 
-  const response = await fetch(process.env.TARGET_API_URL, {
-    method: "POST",
-    // 批注 2026-08-10：上游只建连不结束时，旧循环永远不会安排下一次检查；
-    // 五分钟默认总超时只作兜底，可由 WAKE_UPSTREAM_TIMEOUT_MS 调整。
-    signal: AbortSignal.timeout(WAKE_UPSTREAM_TIMEOUT_MS),
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.TARGET_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: process.env.MODEL_NAME,
-      messages: wakeMessages,
-      temperature: 0.8,
-      top_p: 0.95,
-      stream: false
-    })
-  });
+  const wakeHistoryId = `${now.toISOString()}::${lastUserMarker}`;
+  const wakeHistoryBase = {
+    id: wakeHistoryId,
+    attempted_at: now.toISOString(),
+    user_message_at: lastUserTime.toISOString(),
+    mode: wakeMode,
+    status: "model_started",
+    decision: "pending",
+    push_status: "not_attempted"
+  };
+  upsertWakeHistory(wakeHistoryBase);
 
-  const responseText = await response.text();
   let data;
   try {
+    const response = await fetch(process.env.TARGET_API_URL, {
+      method: "POST",
+      // 批注 2026-08-10：上游只建连不结束时，旧循环永远不会安排下一次检查；
+      // 五分钟默认总超时只作兜底，可由 WAKE_UPSTREAM_TIMEOUT_MS 调整。
+      signal: AbortSignal.timeout(WAKE_UPSTREAM_TIMEOUT_MS),
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.TARGET_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: process.env.MODEL_NAME,
+        messages: wakeMessages,
+        temperature: 0.8,
+        top_p: 0.95,
+        stream: false
+      })
+    });
+
+    const responseText = await response.text();
     data = parseChatCompletionResponse(responseText, response.headers.get("content-type") || "");
+    if (!response.ok) {
+      throw new Error(`模型请求失败（HTTP ${response.status}）：${responseText.slice(0, 300)}`);
+    }
   } catch (error) {
-    throw new Error(`模型响应无法解析（HTTP ${response.status}）：${error.message || responseText.slice(0, 300)}`);
-  }
-  if (!response.ok) {
-    throw new Error(`模型请求失败（HTTP ${response.status}）：${responseText.slice(0, 300)}`);
+    upsertWakeHistory({
+      ...wakeHistoryBase,
+      status: "model_error",
+      error: clip(error.message || error, 300)
+    });
+    throw error;
   }
 
   const rawAiText = normalizeContentToText(data.choices?.[0]?.message?.content).trim();
@@ -633,6 +753,14 @@ ${historyText}`
 
   if (!aiText) {
     console.log("\nAI 未返回推送内容，本次不发送推送\n");
+    const reason = diarySaved ? "只写日记" : "模型空回复";
+    upsertWakeHistory({
+      ...wakeHistoryBase,
+      status: "completed",
+      decision: "no_action",
+      reason,
+      diary_written: diarySaved
+    });
     eventContent = diarySaved
       ? `（${getLocalTimeString()} 自动唤醒：本次未发送推送｜原因：只写日记）`
       : `（${getLocalTimeString()} 自动唤醒：本次未发送推送｜原因：模型空回复）`;
@@ -645,6 +773,13 @@ ${historyText}`
     if (reason.startsWith("原因：") || reason.startsWith("原因:")) {
       reason = reason.replace(/^原因[：:]\s*/, "").trim();
     }
+    upsertWakeHistory({
+      ...wakeHistoryBase,
+      status: "completed",
+      decision: "no_action",
+      reason: reason || "未提供",
+      diary_written: diarySaved
+    });
     eventContent = reason
       ? `（${getLocalTimeString()} 自动唤醒：本次未发送推送｜原因：${reason}）`
       : `（${getLocalTimeString()} 自动唤醒：本次未发送推送）`;
@@ -673,6 +808,13 @@ ${historyText}`
     let title, body;
     if (lines.length === 0) {
       console.log("\n推送内容清洗后为空，本次不发送推送\n");
+      upsertWakeHistory({
+        ...wakeHistoryBase,
+        status: "completed",
+        decision: "no_action",
+        reason: "推送内容为空",
+        diary_written: diarySaved
+      });
       eventContent = `（${getLocalTimeString()} 自动唤醒：本次未发送推送｜原因：推送内容为空）`;
     } else if (lines.length === 1) {
       title = "来自AI";
@@ -693,14 +835,43 @@ ${historyText}`
       let safeTitle = title || "来自伴侣";
       if (/^\d/.test(safeTitle)) safeTitle = "来自伴侣｜" + safeTitle;
 
-      const pushResult = await sendPushNotification({ title: safeTitle, body: safeBody });
+      let pushResult;
+      try {
+        pushResult = await sendPushNotification({ title: safeTitle, body: safeBody });
+      } catch (error) {
+        pushResult = {
+          ok: false,
+          providerLabel: (process.env.PUSH_PROVIDER || "bark").trim() || "推送服务",
+          reason: error.message || String(error)
+        };
+      }
       if (!pushResult.ok) {
         console.log(`\n${pushResult.providerLabel} 推送失败，本次不发送推送\n`);
+        upsertWakeHistory({
+          ...wakeHistoryBase,
+          status: "push_error",
+          decision: "push",
+          push_status: "failed",
+          push_reason: clip(pushResult.reason || "未知错误", 300),
+          push_title: safeTitle,
+          push_body: safeBody,
+          diary_written: diarySaved
+        });
         eventContent = `（${getLocalTimeString()} 自动唤醒：本次未发送推送｜原因：${pushResult.providerLabel} 推送失败：${pushResult.reason}）`;
       } else {
         saveWakeState({
           ...wakeState,
           unanswered_pushes: unansweredPushes + 1
+        });
+        upsertWakeHistory({
+          ...wakeHistoryBase,
+          status: "completed",
+          decision: "push",
+          push_status: "sent",
+          provider: pushResult.providerLabel,
+          push_title: safeTitle,
+          push_body: safeBody,
+          diary_written: diarySaved
         });
         const exceptionLabel = wakeMode === "quiet_exception" ? "｜标记：90分钟静默时段例外" : "";
         eventContent = `（${getLocalTimeString()} 刚刚给用户发了${pushResult.providerLabel}推送：${safeTitle}｜${safeBody}${exceptionLabel}）`;

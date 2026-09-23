@@ -74,6 +74,7 @@ Bark / ntfy 推送 → 你的手机
 | `enhanced_messages.json` | **AI 世界时间线**。SP + 真实对话 + 推送事件。不是日志，是 AI 的当前世界。 |
 | `message_timestamps.json` | **时间戳记忆库**。通过内容指纹记录每条消息的原始时间，找回历史消息时间。 |
 | `wake_state.json` | **唤醒状态**。持久保存最后用户消息及是否已执行过模型唤醒，用户回复后自动重置。 |
+| `wake_history.json` | **唤醒审计记录**。保存最近自动唤醒的调用、模型决定、推送结果和失败原因，下一次唤醒会读到这些记录。 |
 | `diary/` | **自动日记目录**。当 AI 主动输出 `[DIARY]...[/DIARY]` 时，会按日期追加保存。 |
 | `.env` | 环境变量。API Key、推送渠道、模型名称等（不提交到 Git）。 |
 | `.env.example` | 环境变量模板，供新用户参考配置。 |
@@ -249,6 +250,8 @@ DIARY_ENABLED=true
 DIARY_DIR=diary
 DATA_DIR=
 REQUEST_BODY_LIMIT_MB=50
+TIMELINE_MAX_MESSAGES=2000
+WAKE_CONTEXT_MESSAGES=200
 MULTIMODAL_MODE=passthrough
 STRIP_HISTORICAL_TOOL_LOGS=true
 STRIP_HISTORICAL_IMAGES=true
@@ -275,6 +278,8 @@ ADMIN_PASSWORD=你的强密码
 图片消息说明：
 
 - `REQUEST_BODY_LIMIT_MB`：Gateway 可接收的请求体大小，默认 `50`。Kelivo 发送 base64 图片时请求会明显变大，如果仍然报 `413 Payload Too Large`，可以继续调高。
+- `TIMELINE_MAX_MESSAGES`：时间线最多保留的非系统消息数，默认 `2000`。即使 Kelivo 只发送有限上下文，Gateway 也会尽量合并已保存的旧消息，避免唤醒历史被覆盖。
+- `WAKE_CONTEXT_MESSAGES`：每次自动唤醒发送给模型的最近聊天消息数，默认 `200`。更早的唤醒结果通过 `wake_history.json` 单独注入，不依赖聊天窗口长度。
 - `MULTIMODAL_MODE=passthrough`：默认视觉透传模式。Gateway 会保留 Kelivo 原始的多模态 `content` 数组，直接交给支持 OpenAI 兼容图片消息的上游模型。
 - `MULTIMODAL_MODE=text`：文本占位降级模式。图片会被转换成 `[图片]` 继续发给上游，适合不支持视觉的模型或中转站。
 

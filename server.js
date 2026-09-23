@@ -20,11 +20,19 @@ const {
 } = require("./time_utils");
 
 const DEFAULT_BODY_LIMIT_MB = 50;
+const DEFAULT_TIMELINE_MAX_MESSAGES = 2000;
 
 function readBodyLimitBytes() {
   const configured = Number(process.env.REQUEST_BODY_LIMIT_MB);
   const mb = Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_BODY_LIMIT_MB;
   return Math.floor(mb * 1024 * 1024);
+}
+
+function readTimelineMaxMessages() {
+  const configured = Number(process.env.TIMELINE_MAX_MESSAGES);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.floor(configured)
+    : DEFAULT_TIMELINE_MAX_MESSAGES;
 }
 
 const app = Fastify({
@@ -224,7 +232,7 @@ function loadTimeline() {
 function saveTimeline(messages) {
   const sp = messages.find(m => m.role === "system");
   const nonSP = messages.filter(m => m.role !== "system");
-  const trimmed = nonSP.slice(-49);
+  const trimmed = nonSP.slice(-readTimelineMaxMessages());
   const final = sp ? [sp, ...trimmed] : trimmed;
   writeJsonAtomicSync(TIMELINE_FILE, final);
 }
@@ -334,7 +342,13 @@ function buildTimeline(kelivoMessages, tsDB) {
     return 0;
   });
 
-  const merged = [...newRealMessages];
+  // Kelivo may send only a bounded context window. Keep the older real messages
+  // already captured by the gateway so a short client context does not erase the
+  // long-term wake-up history.
+  const oldRealMessages = oldTimeline
+    .filter(isRealMessageForTimeline)
+    .map(normalizeMessageForTimeline);
+  const merged = [...oldRealMessages, ...newRealMessages];
   for (const event of oldSpecialEvents) {
     const eventTime = extractTimestampWithMemory(event, tsDB);
     if (!eventTime) { merged.push(event); continue; }
@@ -352,7 +366,12 @@ function buildTimeline(kelivoMessages, tsDB) {
 
   const seen = new Set();
   const unique = merged.filter(msg => {
-    const key = JSON.stringify({ role: msg.role, content: msg.content });
+    const timestamp = extractTimestampWithMemory(msg, tsDB);
+    const key = JSON.stringify({
+      role: msg.role,
+      content: msg.content,
+      timestamp: timestamp ? timestamp.toISOString() : ""
+    });
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -440,6 +459,8 @@ const PREFERRED_ENV_ORDER = [
   "PUSH_TIMEOUT_MS",
   "WAKE_UPSTREAM_TIMEOUT_MS",
   "REQUEST_BODY_LIMIT_MB",
+  "TIMELINE_MAX_MESSAGES",
+  "WAKE_CONTEXT_MESSAGES",
   "MULTIMODAL_MODE",
   "STRIP_HISTORICAL_TOOL_LOGS",
   "STRIP_HISTORICAL_IMAGES",
