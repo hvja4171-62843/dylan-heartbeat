@@ -250,6 +250,7 @@ DIARY_DIR=diary
 DATA_DIR=
 REQUEST_BODY_LIMIT_MB=50
 MULTIMODAL_MODE=passthrough
+STRIP_HISTORICAL_TOOL_LOGS=true
 DAY_WAKE_AFTER_MINUTES=90
 NIGHT_WAKE_AFTER_MINUTES=90
 DAY_CHECK_INTERVAL_MINUTES=10
@@ -275,6 +276,13 @@ ADMIN_PASSWORD=你的强密码
 - `REQUEST_BODY_LIMIT_MB`：Gateway 可接收的请求体大小，默认 `50`。Kelivo 发送 base64 图片时请求会明显变大，如果仍然报 `413 Payload Too Large`，可以继续调高。
 - `MULTIMODAL_MODE=passthrough`：默认视觉透传模式。Gateway 会保留 Kelivo 原始的多模态 `content` 数组，直接交给支持 OpenAI 兼容图片消息的上游模型。
 - `MULTIMODAL_MODE=text`：文本占位降级模式。图片会被转换成 `[图片]` 继续发给上游，适合不支持视觉的模型或中转站。
+
+历史工具日志压缩：
+
+- `STRIP_HISTORICAL_TOOL_LOGS=true`：默认在转发前移除最新用户消息之前的 `tool` / `function` 结果、历史 `assistant.tool_calls` 和工具专用 content part。
+- 用户和助手的可见文本、图片/文件内容以及最新一轮仍在执行的工具链都会保留；Kelivo 本地对话和 `enhanced_messages.json` 不会被修改。
+- Gateway 日志会输出 `historical_tool_log_compaction` 摘要，包含移除消息数和减少的 JSON 字符数，但不会记录被删除的正文。
+- 如上游必须读取历史原始工具结果，可设置 `STRIP_HISTORICAL_TOOL_LOGS=false` 关闭。
 
 ### 时区配置
 

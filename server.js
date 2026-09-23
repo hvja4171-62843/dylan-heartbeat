@@ -12,6 +12,7 @@ const {
 } = require("./runtime_paths");
 const { isSpecialEventContent } = require("./special_events");
 const { decideRequestAccess } = require("./network_access");
+const { compactHistoricalToolLogs } = require("./tool_log_compaction");
 const {
   formatDateTimeInTimeZone,
   resolveTimeZone,
@@ -590,7 +591,7 @@ app.post("/v1/chat/completions", async (req, reply) => {
 
     // Kelivo 发图时 content 常是数组。默认原样透传给视觉模型；
     // 如上游不支持图片，可设置 MULTIMODAL_MODE=text 退回文本占位。
-    const llmMessages = kelivoMessages
+    let llmMessages = kelivoMessages
       .map(prepareMessageForLLM)
       .filter(Boolean);
 
@@ -620,7 +621,14 @@ app.post("/v1/chat/completions", async (req, reply) => {
       if (!inserted) llmMessages.push(event);
     }
 
-
+    const toolLogCompaction = compactHistoricalToolLogs(llmMessages, {
+      enabled: readBooleanEnv("STRIP_HISTORICAL_TOOL_LOGS", true)
+    });
+    llmMessages = toolLogCompaction.messages;
+    console.log(JSON.stringify({
+      event: "historical_tool_log_compaction",
+      ...toolLogCompaction.stats
+    }));
 
     console.log(JSON.stringify({
       event: "llm_forward_summary",
