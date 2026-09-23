@@ -78,17 +78,43 @@ test("counts successful pushes only after the latest user message", () => {
 test("persists the higher push count and resets it for a new user message", () => {
   assert.deepEqual(reconcileWakeState({
     last_user_marker: "message-a",
-    unanswered_pushes: 2
+    unanswered_pushes: 2,
+    wake_attempted: true,
+    wake_attempted_at: "2026-09-23T01:30:00.000Z"
   }, "message-a", 1), {
     last_user_marker: "message-a",
-    unanswered_pushes: 2
+    unanswered_pushes: 2,
+    wake_attempted: true,
+    wake_attempted_at: "2026-09-23T01:30:00.000Z"
   });
 
   assert.deepEqual(reconcileWakeState({
     last_user_marker: "message-a",
-    unanswered_pushes: 2
+    unanswered_pushes: 2,
+    wake_attempted: true,
+    wake_attempted_at: "2026-09-23T01:30:00.000Z"
   }, "message-b", 0), {
     last_user_marker: "message-b",
-    unanswered_pushes: 0
+    unanswered_pushes: 0,
+    wake_attempted: false,
+    wake_attempted_at: null
+  });
+});
+
+test("infers an existing wake attempt from a successful timeline push", () => {
+  assert.deepEqual(reconcileWakeState({}, "message-a", 1), {
+    last_user_marker: "message-a",
+    unanswered_pushes: 1,
+    wake_attempted: true,
+    wake_attempted_at: null
+  });
+});
+
+test("infers an existing wake attempt from a no-action timeline event", () => {
+  assert.deepEqual(reconcileWakeState({}, "message-a", 0, true), {
+    last_user_marker: "message-a",
+    unanswered_pushes: 0,
+    wake_attempted: true,
+    wake_attempted_at: null
   });
 });

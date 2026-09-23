@@ -49,7 +49,7 @@ function countPushesSince(messages, since, options) {
   }, 0);
 }
 
-function reconcileWakeState(storedState, userMarker, timelinePushCount) {
+function reconcileWakeState(storedState, userMarker, timelinePushCount, timelineWakeAttempted = false) {
   const timelineCount = Number.isInteger(timelinePushCount) && timelinePushCount >= 0
     ? timelinePushCount
     : 0;
@@ -57,10 +57,17 @@ function reconcileWakeState(storedState, userMarker, timelinePushCount) {
     ? storedState.unanswered_pushes
     : 0;
   const sameUserMessage = storedState?.last_user_marker === userMarker;
+  const storedAttempted = storedState?.wake_attempted === true;
+  const storedAttemptedAt = typeof storedState?.wake_attempted_at === "string"
+    ? storedState.wake_attempted_at
+    : null;
+  const inferredAttempted = timelineWakeAttempted === true || timelineCount > 0;
 
   return {
     last_user_marker: userMarker,
-    unanswered_pushes: sameUserMessage ? Math.max(storedCount, timelineCount) : timelineCount
+    unanswered_pushes: sameUserMessage ? Math.max(storedCount, timelineCount) : timelineCount,
+    wake_attempted: sameUserMessage ? (storedAttempted || inferredAttempted) : inferredAttempted,
+    wake_attempted_at: sameUserMessage ? storedAttemptedAt : null
   };
 }
 

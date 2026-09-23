@@ -8,7 +8,7 @@ const {
   runtimeFile,
   writeJsonAtomicSync
 } = require("./runtime_paths");
-const { isSuccessfulPushEventContent } = require("./special_events");
+const { isSpecialEventContent, isSuccessfulPushEventContent } = require("./special_events");
 const { parseChatCompletionResponse } = require("./upstream_response");
 const {
   countPushesSince,
@@ -379,13 +379,13 @@ function isQuietWindowExceptionDueNow(lastUserTime, now) {
   });
 }
 
-function getWakeMode(lastUserTime, now, unansweredPushes) {
+function getWakeMode(lastUserTime, now) {
   if (isWakeAllowedTime(now)) {
     return shouldWake(lastUserTime, now) ? "normal" : null;
   }
 
-  // 静默时段只放行一次：如果这条用户消息还没有成功推送过，90 分钟到期时允许例外推送。
-  if (unansweredPushes === 0 && isQuietWindowExceptionDueNow(lastUserTime, now)) {
+  // 90 分钟到期点落在静默时段时，允许这一条用户消息进行一次例外唤醒。
+  if (isQuietWindowExceptionDueNow(lastUserTime, now)) {
     return "quiet_exception";
   }
 
@@ -427,6 +427,16 @@ function getUnansweredPushCount(messages, lastUserTime) {
     getContentText: normalizeContentToText,
     isSuccessfulPushEventContent,
     parseTimestamp: parseTimelineTimestamp
+  });
+}
+
+function hasWakeAttemptSince(messages, lastUserTime) {
+  return messages.some(message => {
+    if (message?.role !== "assistant") return false;
+    const content = normalizeContentToText(message.content);
+    if (!isSpecialEventContent(content)) return false;
+    const eventTime = parseTimelineTimestamp(content);
+    return eventTime && eventTime > lastUserTime;
   });
 }
 
@@ -493,17 +503,17 @@ async function runWakeUp() {
   const diffMinutes = Math.floor((now - lastUserTime) / 1000 / 60);
   const lastUserMarker = getLastUserMarker(messages, lastUserTime);
   const timelinePushCount = getUnansweredPushCount(messages, lastUserTime);
-  const wakeState = reconcileWakeState(loadWakeState(), lastUserMarker, timelinePushCount);
+  const timelineWakeAttempted = hasWakeAttemptSince(messages, lastUserTime);
+  const wakeState = reconcileWakeState(loadWakeState(), lastUserMarker, timelinePushCount, timelineWakeAttempted);
   saveWakeState(wakeState);
 
-  const maxUnansweredPushes = readNumberEnv("MAX_UNANSWERED_PUSHES", 2, { min: 1 });
   const unansweredPushes = wakeState.unanswered_pushes;
-  if (unansweredPushes >= maxUnansweredPushes) {
-    console.log(`\n用户尚未回复，已成功推送 ${unansweredPushes} 次；暂停推送直到收到新消息\n`);
+  if (wakeState.wake_attempted) {
+    console.log("\n这条用户消息已经执行过一次模型唤醒，等待用户发送新消息\n");
     return;
   }
 
-  const wakeMode = getWakeMode(lastUserTime, now, unansweredPushes);
+  const wakeMode = getWakeMode(lastUserTime, now);
   if (!wakeMode) {
     if (!isWakeAllowedTime(now)) {
       console.log("\n当前处于静默时段，不执行唤醒\n");
@@ -575,6 +585,12 @@ ${historyText}`
     console.log("缺少 TARGET_API_URL / TARGET_API_KEY / MODEL_NAME，跳过本次唤醒");
     return;
   }
+
+  // 在请求模型前持久标记。无论模型选择静默、推送失败或请求异常，
+  // 同一条用户消息都不会再次产生付费模型调用；新用户消息会自动重置该状态。
+  wakeState.wake_attempted = true;
+  wakeState.wake_attempted_at = now.toISOString();
+  saveWakeState(wakeState);
 
   const response = await fetch(process.env.TARGET_API_URL, {
     method: "POST",
@@ -683,7 +699,7 @@ ${historyText}`
         eventContent = `（${getLocalTimeString()} 自动唤醒：本次未发送推送｜原因：${pushResult.providerLabel} 推送失败：${pushResult.reason}）`;
       } else {
         saveWakeState({
-          last_user_marker: lastUserMarker,
+          ...wakeState,
           unanswered_pushes: unansweredPushes + 1
         });
         const exceptionLabel = wakeMode === "quiet_exception" ? "｜标记：90分钟静默时段例外" : "";
@@ -755,7 +771,7 @@ console.log(JSON.stringify({
   model_configured: Boolean(process.env.MODEL_NAME),
   push_provider_configured: Boolean(process.env.BARK_KEY || process.env.NTFY_TOPIC),
   active_window_only: readBooleanEnv("WAKE_ACTIVE_WINDOW_ONLY", true),
-  max_unanswered_pushes: readNumberEnv("MAX_UNANSWERED_PUSHES", 2, { min: 1 }),
+  one_wake_attempt_per_user_message: true,
   data_dir_ready: fs.existsSync(DATA_DIR)
 }));
 console.log("==================================\n");

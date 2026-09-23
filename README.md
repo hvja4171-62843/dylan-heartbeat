@@ -73,7 +73,7 @@ Bark / ntfy 推送 → 你的手机
 | `wake_up.js` | 自动唤醒 Runtime。按间隔唤醒 AI，生成推送或静默，发送到手机，写入时间线。 |
 | `enhanced_messages.json` | **AI 世界时间线**。SP + 真实对话 + 推送事件。不是日志，是 AI 的当前世界。 |
 | `message_timestamps.json` | **时间戳记忆库**。通过内容指纹记录每条消息的原始时间，找回历史消息时间。 |
-| `wake_state.json` | **唤醒状态**。持久保存最后用户消息和连续成功推送次数，用户回复后自动重置。 |
+| `wake_state.json` | **唤醒状态**。持久保存最后用户消息及是否已执行过模型唤醒，用户回复后自动重置。 |
 | `diary/` | **自动日记目录**。当 AI 主动输出 `[DIARY]...[/DIARY]` 时，会按日期追加保存。 |
 | `.env` | 环境变量。API Key、推送渠道、模型名称等（不提交到 Git）。 |
 | `.env.example` | 环境变量模板，供新用户参考配置。 |
@@ -257,7 +257,6 @@ NIGHT_CHECK_INTERVAL_MINUTES=60
 WAKE_DAY_START_HOUR=8
 WAKE_DAY_END_HOUR=2
 WAKE_ACTIVE_WINDOW_ONLY=true
-MAX_UNANSWERED_PUSHES=2
 WEATHER_ENABLED=false
 WEATHER_LOCATION_NAME=Beijing
 WEATHER_LAT=
@@ -359,11 +358,11 @@ Railway 使用环境变量（**Variables**）注入运行时配置，且没有�
 
 ## ⏱️ 自动唤醒策略
 
-- **允许时段（08:00–次日 02:00）**：距离最后一条用户消息 **90 分钟**后允许自动唤醒
-- **静默时段（02:00–08:00）**：不执行常规唤醒；如果 90 分钟到期点落在静默时段，允许针对该用户消息进行 **一次例外推送**
-- 例外推送计入未回复推送次数；若仍未收到回复，第二次推送要等到 08:00 后的正常允许时段
-- 允许时段每 10 分钟检查一次，静默时段每 60 分钟做一次轻量检查，但会提前在 90 分钟到期点检查，避免例外推送被轮询间隔拖延
-- 若连续成功推送 2 次仍未收到用户新消息，停止推送；用户再次发言后自动重置
+- 距离最后一条用户消息 **90 分钟**时，只调用模型 **一次**，由模型决定发送推送或返回 `[NO_ACTION]`
+- 同一条用户消息无论模型是否推送、推送是否成功或模型请求是否报错，都不会再次调用；用户再次发言后自动重置
+- **允许时段（08:00–次日 02:00）**：在 90 分钟到期点正常执行这一次模型调用
+- **静默时段（02:00–08:00）**：如果 90 分钟到期点落在静默时段，允许执行这一次例外模型调用
+- 允许时段每 10 分钟、静默时段每 60 分钟进行本地状态检查，但会提前在 90 分钟到期点检查；这些后续本地检查不会重复调用模型
 
 这些数值在本机/VPS + pm2 部署时，可以在 `/admin` 管理页的 **Wake Settings** 区域填写，保存后重启 `gateway` 和 `wake-up` 生效。Railway / Render 等云端部署请改平台的环境变量，再重新部署。
 
@@ -377,7 +376,6 @@ NIGHT_CHECK_INTERVAL_MINUTES=60
 WAKE_DAY_START_HOUR=8
 WAKE_DAY_END_HOUR=2
 WAKE_ACTIVE_WINDOW_ONLY=true
-MAX_UNANSWERED_PUSHES=2
 ```
 
 说明：
@@ -385,8 +383,7 @@ MAX_UNANSWERED_PUSHES=2
 - `DAY_WAKE_AFTER_MINUTES`：允许时段内，距离最后一条用户消息多久后允许唤醒。
 - `DAY_CHECK_INTERVAL_MINUTES` / `NIGHT_CHECK_INTERVAL_MINUTES`：允许时段和静默时段各自的检查间隔。
 - `WAKE_DAY_START_HOUR` / `WAKE_DAY_END_HOUR`：允许唤醒窗口；开始时间大于结束时间时表示跨午夜。
-- `WAKE_ACTIVE_WINDOW_ONLY=true`：窗口外完全禁止唤醒。
-- `MAX_UNANSWERED_PUSHES`：用户没有发来新消息时，最多成功推送多少次；失败或 `[NO_ACTION]` 不计数。
+- `WAKE_ACTIVE_WINDOW_ONLY=true`：窗口外只允许“90 分钟到期点落在静默时段”的一次例外调用。
 
 ## 🌦️ 天气注入
 

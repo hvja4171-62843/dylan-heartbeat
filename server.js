@@ -447,7 +447,6 @@ const PREFERRED_ENV_ORDER = [
   "WAKE_DAY_START_HOUR",
   "WAKE_DAY_END_HOUR",
   "WAKE_ACTIVE_WINDOW_ONLY",
-  "MAX_UNANSWERED_PUSHES",
   "WEATHER_ENABLED",
   "WEATHER_LOCATION_NAME",
   "WEATHER_LAT",
@@ -873,8 +872,7 @@ app.get("/admin", { preHandler: basicAuth }, async (req, reply) => {
     nightCheckInterval: readEnvValueOrDefault("NIGHT_CHECK_INTERVAL_MINUTES", "60"),
     dayStartHour: readEnvValueOrDefault("WAKE_DAY_START_HOUR", "8"),
     dayEndHour: readEnvValueOrDefault("WAKE_DAY_END_HOUR", "2"),
-    activeWindowOnly: readEnvValueOrDefault("WAKE_ACTIVE_WINDOW_ONLY", "true"),
-    maxUnansweredPushes: readEnvValueOrDefault("MAX_UNANSWERED_PUSHES", "2")
+    activeWindowOnly: readEnvValueOrDefault("WAKE_ACTIVE_WINDOW_ONLY", "true")
   };
   const weatherConfig = {
     enabled: readEnvValueOrDefault("WEATHER_ENABLED", "false"),
@@ -1429,12 +1427,8 @@ const html = `<!DOCTYPE html>
               <option value="false" ${wakeConfig.activeWindowOnly === "true" ? "" : "selected"}>关闭</option>
             </select>
           </div>
-          <div>
-            <label>未回复最多成功推送次数</label>
-            <input type="number" min="1" name="max_unanswered_pushes" id="f_max_unanswered_pushes" value="${escapeHtml(wakeConfig.maxUnansweredPushes)}">
-          </div>
         </div>
-        <div class="hint">开始 8、结束 2 表示每天 08:00 至次日 02:00；02:00 至 08:00 完全静默。只有实际发送成功的推送会计数，用户新消息会自动重置计数。</div>
+        <div class="hint">系统在最后一条用户消息 90 分钟后只调用模型一次。到期点落在 02:00 至 08:00 时允许一次例外调用；用户新消息会重新开始计时。</div>
 
         <div class="section-title">Weather</div>
         <label>天气注入</label>
@@ -1520,7 +1514,6 @@ const html = `<!DOCTYPE html>
         wake_day_start_hour: document.getElementById("f_wake_day_start_hour").value.trim(),
         wake_day_end_hour: document.getElementById("f_wake_day_end_hour").value.trim(),
         wake_active_window_only: document.getElementById("f_wake_active_window_only").value,
-        max_unanswered_pushes: document.getElementById("f_max_unanswered_pushes").value.trim(),
         weather_enabled: document.getElementById("f_weather_enabled").value,
         weather_location_name: document.getElementById("f_weather_location_name").value.trim(),
         weather_lat: document.getElementById("f_weather_lat").value.trim(),
@@ -1638,7 +1631,6 @@ app.post("/admin/save", { preHandler: basicAuth }, async (req, reply) => {
       wake_day_start_hour,
       wake_day_end_hour,
       wake_active_window_only,
-      max_unanswered_pushes,
       weather_enabled,
       weather_location_name,
       weather_lat,
@@ -1670,7 +1662,6 @@ app.post("/admin/save", { preHandler: basicAuth }, async (req, reply) => {
       WAKE_DAY_START_HOUR: normalizeHour(wake_day_start_hour, "WAKE_DAY_START_HOUR", "8", 0, 23),
       WAKE_DAY_END_HOUR: normalizeHour(wake_day_end_hour, "WAKE_DAY_END_HOUR", "2", 0, 24),
       WAKE_ACTIVE_WINDOW_ONLY: normalizeBooleanString(wake_active_window_only, "WAKE_ACTIVE_WINDOW_ONLY", "true"),
-      MAX_UNANSWERED_PUSHES: normalizePositiveInteger(max_unanswered_pushes, "MAX_UNANSWERED_PUSHES", "2"),
       WEATHER_ENABLED: normalizeBooleanString(weather_enabled, "WEATHER_ENABLED", "false"),
       WEATHER_LOCATION_NAME: weather_location_name || "",
       WEATHER_LAT: weather_lat || "",
