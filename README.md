@@ -251,6 +251,7 @@ DATA_DIR=
 REQUEST_BODY_LIMIT_MB=50
 MULTIMODAL_MODE=passthrough
 STRIP_HISTORICAL_TOOL_LOGS=true
+STRIP_HISTORICAL_IMAGES=true
 DAY_WAKE_AFTER_MINUTES=90
 NIGHT_WAKE_AFTER_MINUTES=90
 DAY_CHECK_INTERVAL_MINUTES=10
@@ -283,6 +284,13 @@ ADMIN_PASSWORD=你的强密码
 - 用户和助手的可见文本、图片/文件内容以及最新一轮仍在执行的工具链都会保留；Kelivo 本地对话和 `enhanced_messages.json` 不会被修改。
 - Gateway 日志会输出 `historical_tool_log_compaction` 摘要，包含移除消息数和减少的 JSON 字符数，但不会记录被删除的正文。
 - 如上游必须读取历史原始工具结果，可设置 `STRIP_HISTORICAL_TOOL_LOGS=false` 关闭。
+
+历史图片压缩：
+
+- `STRIP_HISTORICAL_IMAGES=true`：默认将最新用户消息之前的历史图片替换为 `[历史图片已省略]`，只作用于发往模型的请求。
+- 保留全部可见文字、最新用户消息及后续工具链中的图片；Kelivo 本地对话和 `enhanced_messages.json` 不会修改。
+- `historical_image_compaction` 日志摘要记录剥离图片数和估算减少字符数，不记录图片数据。
+- 如需让模型读取完整历史图片，可设置 `STRIP_HISTORICAL_IMAGES=false` 关闭。
 
 ### 时区配置
 

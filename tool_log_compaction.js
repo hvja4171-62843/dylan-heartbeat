@@ -28,6 +28,62 @@ function payloadSize(value) {
   }
 }
 
+function isImageContentPart(part) {
+  if (!part || typeof part !== "object") return false;
+  const type = String(part.type || "").trim().toLowerCase();
+  return type.includes("image") || Boolean(part.image_url);
+}
+
+function compactHistoricalImages(messages, { enabled = true, placeholder = "[历史图片已省略]" } = {}) {
+  const list = Array.isArray(messages) ? messages : [];
+  const latestUserIndex = list.findLastIndex(message => message?.role === "user");
+  const stats = {
+    enabled: Boolean(enabled),
+    latest_user_index: latestUserIndex,
+    stripped_image_parts: 0,
+    removed_image_payload_chars: 0,
+    before_payload_chars: payloadSize(list),
+    after_payload_chars: 0,
+    removed_payload_chars: 0
+  };
+
+  if (!enabled || latestUserIndex < 0) {
+    stats.after_payload_chars = stats.before_payload_chars;
+    return { messages: list, stats };
+  }
+
+  const compacted = list.map((message, index) => {
+    if (index >= latestUserIndex || !["user", "assistant"].includes(message?.role)) return message;
+
+    if (Array.isArray(message.content)) {
+      let changed = false;
+      const content = message.content.map(part => {
+        if (!isImageContentPart(part)) return part;
+        changed = true;
+        stats.stripped_image_parts += 1;
+        stats.removed_image_payload_chars += Math.max(0, payloadSize(part) - payloadSize({ type: "text", text: placeholder }));
+        return { type: "text", text: placeholder };
+      });
+      return changed ? { ...message, content } : message;
+    }
+
+    if (isImageContentPart(message.content)) {
+      stats.stripped_image_parts += 1;
+      stats.removed_image_payload_chars += Math.max(
+        0,
+        payloadSize(message.content) - payloadSize({ type: "text", text: placeholder })
+      );
+      return { ...message, content: [{ type: "text", text: placeholder }] };
+    }
+
+    return message;
+  });
+
+  stats.after_payload_chars = payloadSize(compacted);
+  stats.removed_payload_chars = Math.max(0, stats.before_payload_chars - stats.after_payload_chars);
+  return { messages: compacted, stats };
+}
+
 function compactHistoricalToolLogs(messages, { enabled = true } = {}) {
   const list = Array.isArray(messages) ? messages : [];
   const beforePayloadChars = payloadSize(list);
@@ -101,4 +157,4 @@ function compactHistoricalToolLogs(messages, { enabled = true } = {}) {
   return { messages: compacted, stats };
 }
 
-module.exports = { compactHistoricalToolLogs, isToolContentPart };
+module.exports = { compactHistoricalImages, compactHistoricalToolLogs, isToolContentPart };

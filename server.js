@@ -12,7 +12,7 @@ const {
 } = require("./runtime_paths");
 const { isSpecialEventContent } = require("./special_events");
 const { decideRequestAccess } = require("./network_access");
-const { compactHistoricalToolLogs } = require("./tool_log_compaction");
+const { compactHistoricalImages, compactHistoricalToolLogs } = require("./tool_log_compaction");
 const {
   formatDateTimeInTimeZone,
   resolveTimeZone,
@@ -441,6 +441,8 @@ const PREFERRED_ENV_ORDER = [
   "WAKE_UPSTREAM_TIMEOUT_MS",
   "REQUEST_BODY_LIMIT_MB",
   "MULTIMODAL_MODE",
+  "STRIP_HISTORICAL_TOOL_LOGS",
+  "STRIP_HISTORICAL_IMAGES",
   "DAY_WAKE_AFTER_MINUTES",
   "NIGHT_WAKE_AFTER_MINUTES",
   "DAY_CHECK_INTERVAL_MINUTES",
@@ -628,6 +630,15 @@ app.post("/v1/chat/completions", async (req, reply) => {
     console.log(JSON.stringify({
       event: "historical_tool_log_compaction",
       ...toolLogCompaction.stats
+    }));
+
+    const historicalImageCompaction = compactHistoricalImages(llmMessages, {
+      enabled: readBooleanEnv("STRIP_HISTORICAL_IMAGES", true)
+    });
+    llmMessages = historicalImageCompaction.messages;
+    console.log(JSON.stringify({
+      event: "historical_image_compaction",
+      ...historicalImageCompaction.stats
     }));
 
     console.log(JSON.stringify({
