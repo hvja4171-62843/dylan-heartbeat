@@ -78,3 +78,12 @@ test("converts response protocols for a mismatched client", () => {
   assert.match(openAiSse, /chat\.completion\.chunk/);
   assert.match(openAiSse, /你好/);
 });
+
+test("converts non-stream Claude JSON into OpenAI SSE", () => {
+  const sse = claudeSseToOpenAiSse(
+    JSON.stringify({ content: [{ type: "text", text: "普通 JSON 回复" }] }),
+    "application/json"
+  );
+  assert.match(sse, /chat\.completion\.chunk/);
+  assert.match(sse, /普通 JSON 回复/);
+});

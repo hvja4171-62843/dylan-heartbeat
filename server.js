@@ -786,7 +786,7 @@ app.post("/v1/chat/completions", async (req, reply) => {
           "Cache-Control": "no-cache",
           Connection: "keep-alive"
         });
-        reply.raw.write(claudeSseToOpenAiSse(responseText));
+        reply.raw.write(claudeSseToOpenAiSse(responseText, upstreamContentType));
         reply.raw.end();
         return reply;
       }

@@ -237,7 +237,11 @@ function openAiPayloadToClaude(payload) {
 }
 
 function openAiSseToClaudeSse(text, contentType) {
-  const payload = parseChatCompletionResponse(text, contentType || "text/event-stream");
+  const raw = String(text || "");
+  const isSse = /^\s*(?:event:.*\r?\n)?data:/i.test(raw);
+  const payload = isSse
+    ? parseChatCompletionResponse(raw, contentType || "text/event-stream")
+    : parseChatCompletionResponse(raw, "application/json");
   const message = openAiPayloadToClaude(payload);
   const textBlock = message.content[0]?.text || "";
   const events = [
@@ -258,8 +262,12 @@ function openAiSseToClaudeSse(text, contentType) {
   return events.map(item => `event: ${item.event}\ndata: ${JSON.stringify(item.data)}\n\n`).join("");
 }
 
-function claudeSseToOpenAiSse(text) {
-  const payload = parseClaudeSse(text);
+function claudeSseToOpenAiSse(text, contentType = "") {
+  const raw = String(text || "");
+  const isSse = /^\s*(?:event:.*\r?\n)?data:/i.test(raw);
+  const payload = isSse
+    ? parseClaudeSse(raw)
+    : parseUpstreamResponse(raw, contentType, "claude");
   const choice = payload.choices?.[0] || {};
   const content = choice.message?.content || "";
   const chunk = {
