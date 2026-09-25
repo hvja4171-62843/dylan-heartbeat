@@ -80,14 +80,12 @@ test("persists the higher push count and resets it for a new user message", () =
     last_user_marker: "message-a",
     unanswered_pushes: 2,
     wake_attempted: true,
-    wake_attempted_at: "2026-09-23T01:30:00.000Z",
-    last_wake_at: "2026-09-23T01:30:00.000Z"
+    wake_attempted_at: "2026-09-23T01:30:00.000Z"
   }, "message-a", 1), {
     last_user_marker: "message-a",
     unanswered_pushes: 2,
     wake_attempted: true,
-    wake_attempted_at: "2026-09-23T01:30:00.000Z",
-    last_wake_at: "2026-09-23T01:30:00.000Z"
+    wake_attempted_at: "2026-09-23T01:30:00.000Z"
   });
 
   assert.deepEqual(reconcileWakeState({
@@ -99,8 +97,7 @@ test("persists the higher push count and resets it for a new user message", () =
     last_user_marker: "message-b",
     unanswered_pushes: 0,
     wake_attempted: false,
-    wake_attempted_at: null,
-    last_wake_at: null
+    wake_attempted_at: null
   });
 });
 
@@ -109,8 +106,7 @@ test("infers an existing wake attempt from a successful timeline push", () => {
     last_user_marker: "message-a",
     unanswered_pushes: 1,
     wake_attempted: true,
-    wake_attempted_at: null,
-    last_wake_at: null
+    wake_attempted_at: null
   });
 });
 
@@ -119,7 +115,6 @@ test("infers an existing wake attempt from a no-action timeline event", () => {
     last_user_marker: "message-a",
     unanswered_pushes: 0,
     wake_attempted: true,
-    wake_attempted_at: null,
-    last_wake_at: null
+    wake_attempted_at: null
   });
 });

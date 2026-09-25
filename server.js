@@ -464,7 +464,7 @@ const PREFERRED_ENV_ORDER = [
   "MULTIMODAL_MODE",
   "STRIP_HISTORICAL_TOOL_LOGS",
   "STRIP_HISTORICAL_IMAGES",
-  "DAY_WAKE_INTERVAL_MINUTES",
+  "DAY_WAKE_AFTER_MINUTES",
   "NIGHT_WAKE_AFTER_MINUTES",
   "DAY_CHECK_INTERVAL_MINUTES",
   "NIGHT_CHECK_INTERVAL_MINUTES",
@@ -906,7 +906,7 @@ app.get("/admin", { preHandler: basicAuth }, async (req, reply) => {
   const currentIcon = readEnvValue("CUSTOM_ICON_URL");
   const gatewayKeyStatus = readEnvValue("GATEWAY_API_KEY") ? "已配置" : "未配置";
   const wakeConfig = {
-    dayWakeInterval: readEnvValueOrDefault("DAY_WAKE_INTERVAL_MINUTES", "45"),
+    dayWakeAfter: readEnvValueOrDefault("DAY_WAKE_AFTER_MINUTES", "90"),
     nightWakeAfter: readEnvValueOrDefault("NIGHT_WAKE_AFTER_MINUTES", "90"),
     dayCheckInterval: readEnvValueOrDefault("DAY_CHECK_INTERVAL_MINUTES", "10"),
     nightCheckInterval: readEnvValueOrDefault("NIGHT_CHECK_INTERVAL_MINUTES", "60"),
@@ -1437,11 +1437,11 @@ const html = `<!DOCTYPE html>
         <div class="section-title">Wake Settings</div>
         <div class="grid-2">
           <div>
-            <label>允许时段模型唤醒间隔（分钟）</label>
-            <input type="number" min="1" name="day_wake_interval" id="f_day_wake_interval" value="${escapeHtml(wakeConfig.dayWakeInterval)}">
+            <label>允许时段内多久未回复后唤醒（分钟）</label>
+            <input type="number" min="1" name="day_wake_after" id="f_day_wake_after" value="${escapeHtml(wakeConfig.dayWakeAfter)}">
           </div>
           <div>
-            <label>静默时段例外唤醒阈值（分钟）</label>
+            <label>窗口限制关闭时的备用阈值（分钟）</label>
             <input type="number" min="1" name="night_wake_after" id="f_night_wake_after" value="${escapeHtml(wakeConfig.nightWakeAfter)}">
           </div>
           <div>
@@ -1468,7 +1468,7 @@ const html = `<!DOCTYPE html>
             </select>
           </div>
         </div>
-        <div class="hint">08:00 至次日 02:00 按间隔重复调用模型；02:00 至 08:00 不进行周期唤醒，仅保留一次静默时段例外。用户新消息会重新开始计时。</div>
+        <div class="hint">系统在最后一条用户消息 90 分钟后只调用模型一次。到期点落在 02:00 至 08:00 时允许一次例外调用；用户新消息会重新开始计时。</div>
 
         <div class="section-title">Weather</div>
         <label>天气注入</label>
@@ -1547,7 +1547,7 @@ const html = `<!DOCTYPE html>
         model_name: document.getElementById("f_model").value.trim(),
         bark_key: document.getElementById("f_bark").value.trim(),
         custom_icon: document.getElementById("f_icon").value.trim(),
-        day_wake_interval: document.getElementById("f_day_wake_interval").value.trim(),
+        day_wake_after: document.getElementById("f_day_wake_after").value.trim(),
         night_wake_after: document.getElementById("f_night_wake_after").value.trim(),
         day_check_interval: document.getElementById("f_day_check_interval").value.trim(),
         night_check_interval: document.getElementById("f_night_check_interval").value.trim(),
@@ -1664,7 +1664,7 @@ app.post("/admin/save", { preHandler: basicAuth }, async (req, reply) => {
       model_name,
       bark_key,
       custom_icon,
-      day_wake_interval,
+      day_wake_after,
       night_wake_after,
       day_check_interval,
       night_check_interval,
@@ -1695,7 +1695,7 @@ app.post("/admin/save", { preHandler: basicAuth }, async (req, reply) => {
       MODEL_NAME: model_name,
       BARK_KEY: finalBarkKey,
       CUSTOM_ICON_URL: custom_icon || "",
-      DAY_WAKE_INTERVAL_MINUTES: normalizePositiveInteger(day_wake_interval, "DAY_WAKE_INTERVAL_MINUTES", "45"),
+      DAY_WAKE_AFTER_MINUTES: normalizePositiveInteger(day_wake_after, "DAY_WAKE_AFTER_MINUTES", "90"),
       NIGHT_WAKE_AFTER_MINUTES: normalizePositiveInteger(night_wake_after, "NIGHT_WAKE_AFTER_MINUTES", "90"),
       DAY_CHECK_INTERVAL_MINUTES: normalizePositiveInteger(day_check_interval, "DAY_CHECK_INTERVAL_MINUTES", "10"),
       NIGHT_CHECK_INTERVAL_MINUTES: normalizePositiveInteger(night_check_interval, "NIGHT_CHECK_INTERVAL_MINUTES", "60"),

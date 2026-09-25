@@ -184,27 +184,14 @@ function isWakeAllowedTime(date = new Date()) {
   return isDayTime(date);
 }
 
-function getDayWakeIntervalMinutes() {
-  return readNumberEnv("DAY_WAKE_INTERVAL_MINUTES", 45, { min: 1 });
+function getWakeAfterMinutes(date = new Date()) {
+  return isDayTime(date)
+    ? readNumberEnv("DAY_WAKE_AFTER_MINUTES", 90, { min: 1 })
+    : readNumberEnv("NIGHT_WAKE_AFTER_MINUTES", 90, { min: 1 });
 }
 
-function getQuietExceptionAfterMinutes() {
-  return readNumberEnv("NIGHT_WAKE_AFTER_MINUTES", 90, { min: 1 });
-}
-
-function parseValidDate(value) {
-  if (!value) return null;
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function getPeriodicWakeDeadline(lastUserTime, lastWakeAt = null) {
-  const anchor = parseValidDate(lastWakeAt) || lastUserTime;
-  return getWakeDeadline(anchor, getDayWakeIntervalMinutes());
-}
-
-function getQuietExceptionDeadlineForUser(lastUserTime) {
-  return getWakeDeadline(lastUserTime, getQuietExceptionAfterMinutes());
+function getWakeDeadlineForUser(lastUserTime) {
+  return getWakeDeadline(lastUserTime, getWakeAfterMinutes(lastUserTime));
 }
 
 function getCheckIntervalMinutes(date = new Date()) {
@@ -442,11 +429,16 @@ function getLocalTimeString() {
   return formatDateTimeInTimeZone(new Date(), TIME_ZONE);
 }
 
+function shouldWake(lastUserTime, now = getNow()) {
+  const deadline = getWakeDeadlineForUser(lastUserTime);
+  return Boolean(deadline && now >= deadline);
+}
+
 function isQuietWindowExceptionDueNow(lastUserTime, now) {
   return isQuietWindowExceptionDue({
     lastUserTime,
     now,
-    wakeAfterMinutes: getQuietExceptionAfterMinutes(),
+    wakeAfterMinutes: getWakeAfterMinutes(lastUserTime),
     getHour: date => getHourInTimeZone(date, TIME_ZONE),
     start: readNumberEnv("WAKE_DAY_START_HOUR", 8, { min: 0, max: 23 }),
     end: readNumberEnv("WAKE_DAY_END_HOUR", 2, { min: 0, max: 24 }),
@@ -454,14 +446,13 @@ function isQuietWindowExceptionDueNow(lastUserTime, now) {
   });
 }
 
-function getWakeMode(lastUserTime, lastWakeAt, now) {
+function getWakeMode(lastUserTime, now) {
   if (isWakeAllowedTime(now)) {
-    const deadline = getPeriodicWakeDeadline(lastUserTime, lastWakeAt);
-    return deadline && now >= deadline ? "normal" : null;
+    return shouldWake(lastUserTime, now) ? "normal" : null;
   }
 
-  // 静默时段仍只允许这一条用户消息进行一次 90 分钟例外唤醒。
-  if (!lastWakeAt && isQuietWindowExceptionDueNow(lastUserTime, now)) {
+  // 90 分钟到期点落在静默时段时，允许这一条用户消息进行一次例外唤醒。
+  if (isQuietWindowExceptionDueNow(lastUserTime, now)) {
     return "quiet_exception";
   }
 
@@ -514,18 +505,6 @@ function hasWakeAttemptSince(messages, lastUserTime) {
     const eventTime = parseTimelineTimestamp(content);
     return eventTime && eventTime > lastUserTime;
   });
-}
-
-function getLastWakeEventTime(messages, lastUserTime) {
-  let latest = null;
-  for (const message of Array.isArray(messages) ? messages : []) {
-    if (message?.role !== "assistant") continue;
-    const content = normalizeContentToText(message.content);
-    if (!isSpecialEventContent(content)) continue;
-    const eventTime = parseTimelineTimestamp(content);
-    if (eventTime && eventTime > lastUserTime && (!latest || eventTime > latest)) latest = eventTime;
-  }
-  return latest;
 }
 
 function stripPosition(messages) {
@@ -617,20 +596,16 @@ async function runWakeUp() {
   const lastUserMarker = getLastUserMarker(messages, lastUserTime);
   const timelinePushCount = getUnansweredPushCount(messages, lastUserTime);
   const timelineWakeAttempted = hasWakeAttemptSince(messages, lastUserTime);
-  const timelineLastWakeAt = getLastWakeEventTime(messages, lastUserTime);
-  const wakeState = reconcileWakeState(
-    loadWakeState(),
-    lastUserMarker,
-    timelinePushCount,
-    timelineWakeAttempted,
-    timelineLastWakeAt
-  );
+  const wakeState = reconcileWakeState(loadWakeState(), lastUserMarker, timelinePushCount, timelineWakeAttempted);
   saveWakeState(wakeState);
 
   const unansweredPushes = wakeState.unanswered_pushes;
-  const lastWakeAt = parseValidDate(wakeState.last_wake_at) || timelineLastWakeAt;
+  if (wakeState.wake_attempted) {
+    console.log("\n这条用户消息已经执行过一次模型唤醒，等待用户发送新消息\n");
+    return;
+  }
 
-  const wakeMode = getWakeMode(lastUserTime, lastWakeAt, now);
+  const wakeMode = getWakeMode(lastUserTime, now);
   if (!wakeMode) {
     if (!isWakeAllowedTime(now)) {
       console.log("\n当前处于静默时段，不执行唤醒\n");
@@ -642,8 +617,6 @@ async function runWakeUp() {
 
   if (wakeMode === "quiet_exception") {
     console.log("\n当前处于静默时段，但已到达 90 分钟例外唤醒点\n");
-  } else if (lastWakeAt) {
-    console.log(`\n上次模型唤醒：${lastWakeAt.toISOString()}，本次达到 45 分钟周期\n`);
   }
 
   const weatherContext = await fetchWeatherContext();
@@ -716,11 +689,10 @@ ${historyText}`
     return;
   }
 
-  // 在请求模型前持久标记。模型失败时，下一次周期仍可继续尝试；
-  // 新用户消息会自动重置本条消息的周期。
+  // 在请求模型前持久标记。无论模型选择静默、推送失败或请求异常，
+  // 同一条用户消息都不会再次产生付费模型调用；新用户消息会自动重置该状态。
   wakeState.wake_attempted = true;
   wakeState.wake_attempted_at = now.toISOString();
-  wakeState.last_wake_at = now.toISOString();
   saveWakeState(wakeState);
 
   const wakeHistoryId = `${now.toISOString()}::${lastUserMarker}`;
@@ -923,27 +895,22 @@ ${historyText}`
 }
 
 // 从第一个有效坐标开始，所有路径都指向同一处。此阈值已锁定。
+function getLastTimelineUserTime() {
+  const messages = loadTimelineMessages();
+  return messages ? getLastUserTime(messages) : null;
+}
+
 function getCheckIntervalMs() {
-  // 本地检查频率与模型唤醒周期分离；检查只负责尽量准时触发下一次周期唤醒。
+  // 批注 2026-06-26：公开版允许用户在管理页调整唤醒检查频率；默认值保持白天10分钟、夜间60分钟。
   const now = getNow();
   const baseIntervalMs = getCheckIntervalMinutes(now) * 60 * 1000;
-  const messages = loadTimelineMessages();
-  const lastUserTime = messages ? getLastUserTime(messages) : null;
+  const lastUserTime = getLastTimelineUserTime();
   if (!lastUserTime) return baseIntervalMs;
 
-  const lastUserMarker = getLastUserMarker(messages, lastUserTime);
-  const storedState = loadWakeState();
-  const stateLastWakeAt = storedState?.last_user_marker === lastUserMarker
-    ? parseValidDate(storedState.last_wake_at || storedState.wake_attempted_at)
-    : null;
-  const timelineLastWakeAt = getLastWakeEventTime(messages, lastUserTime);
-  const lastWakeAt = stateLastWakeAt || timelineLastWakeAt;
-  const deadline = isWakeAllowedTime(now)
-    ? getPeriodicWakeDeadline(lastUserTime, lastWakeAt)
-    : (!lastWakeAt ? getQuietExceptionDeadlineForUser(lastUserTime) : null);
+  const deadline = getWakeDeadlineForUser(lastUserTime);
   if (!deadline || deadline <= now) return baseIntervalMs;
 
-  // 提前在周期或 90 分钟静默例外到期点检查，避免固定轮询把模型调用拖晚。
+  // 提前在 90 分钟到期点检查，避免静默时段的 60 分钟轮询把例外推送拖晚。
   return Math.max(1000, Math.min(baseIntervalMs, deadline.getTime() - now.getTime() + 1000));
 }
 
