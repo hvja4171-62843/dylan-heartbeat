@@ -255,7 +255,7 @@ WAKE_CONTEXT_MESSAGES=200
 MULTIMODAL_MODE=passthrough
 STRIP_HISTORICAL_TOOL_LOGS=true
 STRIP_HISTORICAL_IMAGES=true
-DAY_WAKE_AFTER_MINUTES=90
+DAY_WAKE_AFTER_MINUTES=45
 NIGHT_WAKE_AFTER_MINUTES=90
 DAY_CHECK_INTERVAL_MINUTES=10
 NIGHT_CHECK_INTERVAL_MINUTES=60
@@ -379,10 +379,10 @@ Railway 使用环境变量（**Variables**）注入运行时配置，且没有�
 
 ## ⏱️ 自动唤醒策略
 
-- 距离最后一条用户消息 **90 分钟**时，只调用模型 **一次**，由模型决定发送推送或返回 `[NO_ACTION]`
+- **允许时段（08:00–次日 02:00）**：距离用户最后一条消息45分钟时，只调用模型一次，由模型决定发送推送或返回 `[NO_ACTION]`
 - 同一条用户消息无论模型是否推送、推送是否成功或模型请求是否报错，都不会再次调用；用户再次发言后自动重置
-- **允许时段（08:00–次日 02:00）**：在 90 分钟到期点正常执行这一次模型调用
-- **静默时段（02:00–08:00）**：如果 90 分钟到期点落在静默时段，允许执行这一次例外模型调用
+- 不设置“两次未回复后停止”的额外推送限制；当前策略本身就是每条用户消息最多一次模型唤醒
+- **静默时段（02:00–08:00）**：如果90分钟例外到期点落在静默时段，允许执行这一次例外模型调用
 - 允许时段每 10 分钟、静默时段每 60 分钟进行本地状态检查，但会提前在 90 分钟到期点检查；这些后续本地检查不会重复调用模型
 
 这些数值在本机/VPS + pm2 部署时，可以在 `/admin` 管理页的 **Wake Settings** 区域填写，保存后重启 `gateway` 和 `wake-up` 生效。Railway / Render 等云端部署请改平台的环境变量，再重新部署。
@@ -390,7 +390,7 @@ Railway 使用环境变量（**Variables**）注入运行时配置，且没有�
 对应环境变量：
 
 ```env
-DAY_WAKE_AFTER_MINUTES=90
+DAY_WAKE_AFTER_MINUTES=45
 NIGHT_WAKE_AFTER_MINUTES=90
 DAY_CHECK_INTERVAL_MINUTES=10
 NIGHT_CHECK_INTERVAL_MINUTES=60
@@ -401,7 +401,8 @@ WAKE_ACTIVE_WINDOW_ONLY=true
 
 说明：
 
-- `DAY_WAKE_AFTER_MINUTES`：允许时段内，距离最后一条用户消息多久后允许唤醒。
+- `DAY_WAKE_AFTER_MINUTES`：允许时段内，距离最后一条用户消息多久后允许唤醒，默认45分钟。
+- `NIGHT_WAKE_AFTER_MINUTES`：静默时段例外模型调用的等待阈值，默认90分钟。
 - `DAY_CHECK_INTERVAL_MINUTES` / `NIGHT_CHECK_INTERVAL_MINUTES`：允许时段和静默时段各自的检查间隔。
 - `WAKE_DAY_START_HOUR` / `WAKE_DAY_END_HOUR`：允许唤醒窗口；开始时间大于结束时间时表示跨午夜。
 - `WAKE_ACTIVE_WINDOW_ONLY=true`：窗口外只允许“90 分钟到期点落在静默时段”的一次例外调用。

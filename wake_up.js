@@ -186,8 +186,12 @@ function isWakeAllowedTime(date = new Date()) {
 
 function getWakeAfterMinutes(date = new Date()) {
   return isDayTime(date)
-    ? readNumberEnv("DAY_WAKE_AFTER_MINUTES", 90, { min: 1 })
+    ? readNumberEnv("DAY_WAKE_AFTER_MINUTES", 45, { min: 1 })
     : readNumberEnv("NIGHT_WAKE_AFTER_MINUTES", 90, { min: 1 });
+}
+
+function getQuietExceptionAfterMinutes() {
+  return readNumberEnv("NIGHT_WAKE_AFTER_MINUTES", 90, { min: 1 });
 }
 
 function getWakeDeadlineForUser(lastUserTime) {
@@ -438,7 +442,7 @@ function isQuietWindowExceptionDueNow(lastUserTime, now) {
   return isQuietWindowExceptionDue({
     lastUserTime,
     now,
-    wakeAfterMinutes: getWakeAfterMinutes(lastUserTime),
+    wakeAfterMinutes: getQuietExceptionAfterMinutes(),
     getHour: date => getHourInTimeZone(date, TIME_ZONE),
     start: readNumberEnv("WAKE_DAY_START_HOUR", 8, { min: 0, max: 23 }),
     end: readNumberEnv("WAKE_DAY_END_HOUR", 2, { min: 0, max: 24 }),
