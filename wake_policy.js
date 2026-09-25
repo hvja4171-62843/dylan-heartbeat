@@ -49,7 +49,13 @@ function countPushesSince(messages, since, options) {
   }, 0);
 }
 
-function reconcileWakeState(storedState, userMarker, timelinePushCount, timelineWakeAttempted = false) {
+function reconcileWakeState(
+  storedState,
+  userMarker,
+  timelinePushCount,
+  timelineWakeAttempted = false,
+  timelineLastWakeAt = null
+) {
   const timelineCount = Number.isInteger(timelinePushCount) && timelinePushCount >= 0
     ? timelinePushCount
     : 0;
@@ -62,12 +68,22 @@ function reconcileWakeState(storedState, userMarker, timelinePushCount, timeline
     ? storedState.wake_attempted_at
     : null;
   const inferredAttempted = timelineWakeAttempted === true || timelineCount > 0;
+  const storedLastWakeAt = typeof storedState?.last_wake_at === "string"
+    ? storedState.last_wake_at
+    : storedAttemptedAt;
+  const wakeDates = [storedLastWakeAt, timelineLastWakeAt]
+    .map(value => value instanceof Date ? value.toISOString() : value)
+    .filter(value => typeof value === "string" && !Number.isNaN(new Date(value).getTime()));
+  const latestWakeAt = wakeDates
+    .sort((a, b) => new Date(a).getTime() - new Date(b).getTime())
+    .pop() || null;
 
   return {
     last_user_marker: userMarker,
     unanswered_pushes: sameUserMessage ? Math.max(storedCount, timelineCount) : timelineCount,
     wake_attempted: sameUserMessage ? (storedAttempted || inferredAttempted) : inferredAttempted,
-    wake_attempted_at: sameUserMessage ? storedAttemptedAt : null
+    wake_attempted_at: sameUserMessage ? storedAttemptedAt : null,
+    last_wake_at: sameUserMessage ? latestWakeAt : null
   };
 }
 
