@@ -787,7 +787,8 @@ app.post("/v1/chat/completions", async (req, reply) => {
           Connection: "keep-alive"
         });
         reply.raw.write(claudeSseToOpenAiSse(responseText));
-        return reply.raw.end();
+        reply.raw.end();
+        return reply;
       }
       const parsed = parseUpstreamResponse(responseText, upstreamContentType, "claude");
       return reply.code(response.status).send(parsed);
@@ -854,7 +855,8 @@ app.post("/v1/messages", async (req, reply) => {
         Connection: "keep-alive"
       });
       reply.raw.write(openAiSseToClaudeSse(responseText, contentType));
-      return reply.raw.end();
+      reply.raw.end();
+      return reply;
     }
     const parsed = parseUpstreamResponse(responseText, contentType, "openai");
     return reply.code(response.status).send(openAiPayloadToClaude(parsed));
