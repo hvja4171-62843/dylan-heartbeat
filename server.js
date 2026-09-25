@@ -751,8 +751,14 @@ app.post("/v1/chat/completions", async (req, reply) => {
 
     const requestedStream = body?.stream === true;
 
+    // 管理页里的 MODEL_NAME 是唯一上游模型配置；Kelivo 可能缓存旧的 /v1/models，
+    // 不能让客户端带来的旧 model 覆盖当前中转站配置。
+    const upstreamBody = {
+      ...body,
+      model: configuredModelName()
+    };
     const upstreamRequest = buildUpstreamRequest({
-      body,
+      body: upstreamBody,
       messages: llmMessages,
       protocol: TARGET_API_TYPE
     });
