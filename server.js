@@ -14,6 +14,15 @@ const { isSpecialEventContent } = require("./special_events");
 const { decideRequestAccess } = require("./network_access");
 const { compactHistoricalImages, compactHistoricalToolLogs } = require("./tool_log_compaction");
 const {
+  buildUpstreamRequest,
+  claudeSseToOpenAiSse,
+  claudeRequestToOpenAi,
+  normalizeProtocol,
+  openAiPayloadToClaude,
+  openAiSseToClaudeSse,
+  parseUpstreamResponse
+} = require("./protocol_adapter");
+const {
   formatDateTimeInTimeZone,
   resolveTimeZone,
   zonedWallTimeToDate
@@ -44,6 +53,7 @@ app.register(require("@fastify/formbody"));
 
 const PORT = Number(process.env.PORT) || 3000;
 const TARGET_API_URL = process.env.TARGET_API_URL;
+const TARGET_API_TYPE = normalizeProtocol(process.env.TARGET_API_TYPE);
 const TIME_ZONE = resolveTimeZone();
 const IS_RAILWAY_RUNTIME = Boolean(
   process.env.RAILWAY_ENVIRONMENT ||
@@ -441,7 +451,9 @@ const PRESETS_FILE = runtimeFile("presets.json");
 const ENV_FILE = path.join(PROJECT_DIR, ".env");
 const PREFERRED_ENV_ORDER = [
   "TARGET_API_URL",
+  "TARGET_API_TYPE",
   "TARGET_API_KEY",
+  "ANTHROPIC_VERSION",
   "GATEWAY_API_KEY",
   "MODEL_NAME",
   "BARK_KEY",
@@ -739,18 +751,41 @@ app.post("/v1/chat/completions", async (req, reply) => {
 
     const requestedStream = body?.stream === true;
 
+    const upstreamRequest = buildUpstreamRequest({
+      body,
+      messages: llmMessages,
+      protocol: TARGET_API_TYPE
+    });
+
     // 请求模型
     const response = await fetch(TARGET_API_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.TARGET_API_KEY}`
-      },
-      body: JSON.stringify({ ...body, messages: llmMessages })
+      headers: upstreamRequest.headers,
+      body: JSON.stringify(upstreamRequest.body)
     });
 
     const upstreamContentType = response.headers.get("content-type") || "";
     const shouldStreamResponse = requestedStream || upstreamContentType.includes("text/event-stream");
+
+    if (TARGET_API_TYPE === "claude") {
+      const responseText = await response.text();
+      if (!response.ok) {
+        return reply.code(response.status)
+          .header("Content-Type", upstreamContentType || "application/json")
+          .send(responseText);
+      }
+      if (shouldStreamResponse) {
+        reply.raw.writeHead(response.status, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive"
+        });
+        reply.raw.write(claudeSseToOpenAiSse(responseText));
+        return reply.raw.end();
+      }
+      const parsed = parseUpstreamResponse(responseText, upstreamContentType, "claude");
+      return reply.code(response.status).send(parsed);
+    }
 
     // 批注 2026-07-11：Kelivo 关闭 stream 时需要收到普通 JSON；只在请求或上游确认为 SSE 时才按流式直通。
     if (!shouldStreamResponse) {
@@ -781,6 +816,45 @@ app.post("/v1/chat/completions", async (req, reply) => {
   } catch (err) {
     console.error(err);
     reply.code(500).send({ error: err.message });
+  }
+});
+
+// ========================
+// Claude Messages
+// ========================
+app.post("/v1/messages", async (req, reply) => {
+  try {
+    // Claude 原生请求先转换成内部 OpenAI 形状，复用时间线、工具日志和图片压缩逻辑。
+    // 当 TARGET_API_TYPE=claude 时，内部转发会再转换回 Claude 原生请求。
+    const openAiBody = claudeRequestToOpenAi(req.body || {});
+    const response = await fetch(`http://127.0.0.1:${PORT}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-gateway-internal": "claude-adapter"
+      },
+      body: JSON.stringify(openAiBody)
+    });
+    const contentType = response.headers.get("content-type") || "application/json";
+    const responseText = await response.text();
+    if (!response.ok) {
+      return reply.code(response.status).header("Content-Type", contentType).send(responseText);
+    }
+    const requestedStream = req.body?.stream === true || contentType.includes("text/event-stream");
+    if (requestedStream) {
+      reply.raw.writeHead(response.status, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive"
+      });
+      reply.raw.write(openAiSseToClaudeSse(responseText, contentType));
+      return reply.raw.end();
+    }
+    const parsed = parseUpstreamResponse(responseText, contentType, "openai");
+    return reply.code(response.status).send(openAiPayloadToClaude(parsed));
+  } catch (err) {
+    console.error(err);
+    return reply.code(500).send({ error: err.message });
   }
 });
 
@@ -902,6 +976,7 @@ app.get("/admin", { preHandler: basicAuth }, async (req, reply) => {
     : "离线或未启动";
 
   const currentUrl = readEnvValue("TARGET_API_URL");
+  const currentApiType = normalizeProtocol(readEnvValue("TARGET_API_TYPE"));
   const currentModel = readEnvValue("MODEL_NAME");
   const currentIcon = readEnvValue("CUSTOM_ICON_URL");
   const gatewayKeyStatus = readEnvValue("GATEWAY_API_KEY") ? "已配置" : "未配置";
@@ -1422,6 +1497,11 @@ const html = `<!DOCTYPE html>
       <form id="configForm" onsubmit="saveConfig(event)">
         <label>API URL</label>
         <input name="target_url" id="f_url" value="${escapeHtml(currentUrl)}">
+        <label>上游接口协议</label>
+        <select name="target_api_type" id="f_api_type">
+          <option value="openai" ${currentApiType === "openai" ? "selected" : ""}>OpenAI 兼容</option>
+          <option value="claude" ${currentApiType === "claude" ? "selected" : ""}>Claude 原生</option>
+        </select>
         <label>API Key</label>
         <input name="target_key" id="f_key" placeholder="留空不修改">
         <label>Gateway API Key</label>
@@ -1542,6 +1622,7 @@ const html = `<!DOCTYPE html>
       event.preventDefault();
       const payload = {
         target_url: document.getElementById("f_url").value.trim(),
+        target_api_type: document.getElementById("f_api_type").value,
         target_key: document.getElementById("f_key").value.trim(),
         gateway_api_key: document.getElementById("f_gateway_key").value.trim(),
         model_name: document.getElementById("f_model").value.trim(),
@@ -1659,6 +1740,7 @@ app.post("/admin/save", { preHandler: basicAuth }, async (req, reply) => {
   try {
     const {
       target_url,
+      target_api_type,
       target_key,
       gateway_api_key,
       model_name,
@@ -1690,6 +1772,7 @@ app.post("/admin/save", { preHandler: basicAuth }, async (req, reply) => {
     // 批注 2026-07-15：GATEWAY_API_KEY 是公开 /v1 的客户端鉴权 key，不能和上游 TARGET_API_KEY 混在一起展示或返回。
     writeEnvUpdates({
       TARGET_API_URL: target_url,
+      TARGET_API_TYPE: normalizeProtocol(target_api_type),
       TARGET_API_KEY: finalTargetKey,
       GATEWAY_API_KEY: finalGatewayKey,
       MODEL_NAME: model_name,

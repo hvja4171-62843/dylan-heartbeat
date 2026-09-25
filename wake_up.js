@@ -9,7 +9,7 @@ const {
   writeJsonAtomicSync
 } = require("./runtime_paths");
 const { isSpecialEventContent, isSuccessfulPushEventContent } = require("./special_events");
-const { parseChatCompletionResponse } = require("./upstream_response");
+const { buildUpstreamRequest, normalizeProtocol, parseUpstreamResponse } = require("./protocol_adapter");
 const {
   countPushesSince,
   getWakeDeadline,
@@ -35,6 +35,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const GATEWAY_BASE_URL = (process.env.GATEWAY_BASE_URL || `http://localhost:${PORT}`).replace(/\/+$/, "");
 const GATEWAY_URL = `${GATEWAY_BASE_URL}/internal/wake-event`;
 const HEARTBEAT_URL = `${GATEWAY_BASE_URL}/internal/heartbeat`;
+const TARGET_API_TYPE = normalizeProtocol(process.env.TARGET_API_TYPE);
 const TIME_ZONE = resolveTimeZone();
 const WEATHER_TIMEOUT_MS = 5000;
 const DIARY_DIR_NAME = process.env.DIARY_DIR || "diary";
@@ -713,26 +714,29 @@ ${historyText}`
 
   let data;
   try {
+    const upstreamRequest = buildUpstreamRequest({
+      body: {
+        model: process.env.MODEL_NAME,
+        messages: wakeMessages,
+        max_tokens: Number(process.env.WAKE_MAX_TOKENS) || 1024,
+        temperature: 0.8,
+        top_p: 0.95,
+        stream: false
+      },
+      messages: wakeMessages,
+      protocol: TARGET_API_TYPE
+    });
     const response = await fetch(process.env.TARGET_API_URL, {
       method: "POST",
       // 批注 2026-08-10：上游只建连不结束时，旧循环永远不会安排下一次检查；
       // 五分钟默认总超时只作兜底，可由 WAKE_UPSTREAM_TIMEOUT_MS 调整。
       signal: AbortSignal.timeout(WAKE_UPSTREAM_TIMEOUT_MS),
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.TARGET_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: process.env.MODEL_NAME,
-        messages: wakeMessages,
-        temperature: 0.8,
-        top_p: 0.95,
-        stream: false
-      })
+      headers: upstreamRequest.headers,
+      body: JSON.stringify(upstreamRequest.body)
     });
 
     const responseText = await response.text();
-    data = parseChatCompletionResponse(responseText, response.headers.get("content-type") || "");
+    data = parseUpstreamResponse(responseText, response.headers.get("content-type") || "", TARGET_API_TYPE);
     if (!response.ok) {
       throw new Error(`模型请求失败（HTTP ${response.status}）：${responseText.slice(0, 300)}`);
     }

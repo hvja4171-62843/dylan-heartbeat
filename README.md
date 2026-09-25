@@ -234,7 +234,9 @@ nano .env   # 也可直接用文本编辑器打开 .env 文件修改
 `.env` 完整配置示例：
 ```env
 TARGET_API_URL=https://你的API地址/v1/chat/completions
+TARGET_API_TYPE=openai
 TARGET_API_KEY=sk-你的APIKey
+ANTHROPIC_VERSION=2023-06-01
 GATEWAY_API_KEY=请改成随机长密码
 MODEL_NAME=你的模型
 BARK_KEY=你的Bark设备Key
@@ -282,6 +284,13 @@ ADMIN_PASSWORD=你的强密码
 - `WAKE_CONTEXT_MESSAGES`：每次自动唤醒发送给模型的最近聊天消息数，默认 `200`。更早的唤醒结果通过 `wake_history.json` 单独注入，不依赖聊天窗口长度。
 - `MULTIMODAL_MODE=passthrough`：默认视觉透传模式。Gateway 会保留 Kelivo 原始的多模态 `content` 数组，直接交给支持 OpenAI 兼容图片消息的上游模型。
 - `MULTIMODAL_MODE=text`：文本占位降级模式。图片会被转换成 `[图片]` 继续发给上游，适合不支持视觉的模型或中转站。
+
+上游接口协议：
+
+- `TARGET_API_TYPE=openai`：上游使用 OpenAI 兼容的 `/v1/chat/completions`，Kelivo 选择 OpenAI 接口。
+- `TARGET_API_TYPE=claude`：上游使用 Claude 原生的 `/v1/messages`，Kelivo 选择 Claude 接口；API Key 会通过 `x-api-key` 发送，并带上 `anthropic-version`。
+- `TARGET_API_URL` 要填写完整接口地址，OpenAI 通常以 `/chat/completions` 结尾，Claude 通常以 `/messages` 结尾。
+- `ANTHROPIC_VERSION` 默认是 `2023-06-01`；只有中转站要求其他 Anthropic API 版本时才需要修改。
 
 历史工具日志压缩：
 
